@@ -1,0 +1,140 @@
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { test } from "node:test";
+
+import { DEFAULT_TIMEOUT_MS, detectPortFromText, parseArgs, stripAnsi } from "../src/index.ts";
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const cliPath = path.join(repoRoot, "dist", "index.js");
+
+test("detectPortFromText finds common dev-server URLs", () => {
+  assert.equal(detectPortFromText("Local:   http://localhost:5173/"), 5173);
+  assert.equal(detectPortFromText("ready - started server on 0.0.0.0:3000"), 3000);
+  assert.equal(detectPortFromText("Server running at http://127.0.0.1:8080"), 8080);
+  assert.equal(detectPortFromText("PORT=4321"), 4321);
+});
+
+test("detectPortFromText strips ANSI escape sequences", () => {
+  const output = "\u001b[32mLocal:\u001b[0m http://localhost:24678";
+  assert.equal(stripAnsi(output), "Local: http://localhost:24678");
+  assert.equal(detectPortFromText(output), 24678);
+});
+
+test("detectPortFromText ignores invalid and missing ports", () => {
+  assert.equal(detectPortFromText("Server ready"), undefined);
+  assert.equal(detectPortFromText("Local: http://localhost"), undefined);
+  assert.equal(detectPortFromText("port 70000"), undefined);
+});
+
+test("parseArgs parses options before the command", () => {
+  assert.deepEqual(parseArgs(["--host", "localhost", "--port", "3000", "--timeout=5000", "--no-open-check", "pnpm", "dev"]), {
+    command: ["pnpm", "dev"],
+    host: "localhost",
+    port: 3000,
+    timeoutMs: 5000,
+    openCheck: false,
+  });
+});
+
+test("parseArgs keeps command flags after -- delimiter", () => {
+  assert.deepEqual(parseArgs(["--timeout", "1000", "--", "npm", "run", "dev", "--", "--host", "0.0.0.0"]), {
+    command: ["npm", "run", "dev", "--", "--host", "0.0.0.0"],
+    host: "127.0.0.1",
+    timeoutMs: 1000,
+    openCheck: true,
+  });
+});
+
+test("parseArgs uses documented defaults", () => {
+  assert.deepEqual(parseArgs(["pnpm", "dev"]), {
+    command: ["pnpm", "dev"],
+    host: "127.0.0.1",
+    timeoutMs: DEFAULT_TIMEOUT_MS,
+    openCheck: true,
+  });
+});
+
+test("CLI starts a command, detects its port, and calls tailscale serve", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "lizardtail-test-"));
+  const tailscalePath = path.join(tempDir, "tailscale");
+  const tailscaleLog = path.join(tempDir, "tailscale.log");
+
+  await writeFile(
+    tailscalePath,
+    `#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$TAILSCALE_LOG"
+if [ "$1" = "status" ] && [ "$2" = "--json" ]; then
+  echo '{"Self":{"DNSName":"test-host.tailnet.ts.net.","TailscaleIPs":["100.64.0.1"]}}'
+  exit 0
+fi
+if [ "$1" = "status" ]; then
+  echo 'ok'
+  exit 0
+fi
+if [ "$1" = "serve" ]; then
+  echo 'serve ok'
+  exit 0
+fi
+exit 1
+`,
+    { mode: 0o755 },
+  );
+
+  try {
+    const child = spawn(
+      process.execPath,
+      [
+        cliPath,
+        "--timeout",
+        "5000",
+        "--",
+        process.execPath,
+        "-e",
+        `const http = require("http");
+const server = http.createServer((req, res) => res.end("ok"));
+server.listen(0, "127.0.0.1", () => {
+  console.log("Local: http://localhost:" + server.address().port);
+  setTimeout(() => server.close(), 1200);
+});`,
+      ],
+      {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          PATH: `${tempDir}${path.delimiter}${process.env.PATH ?? ""}`,
+          TAILSCALE_LOG: tailscaleLog,
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+
+    const exitCode = await new Promise<number | null>((resolve) => child.on("exit", resolve));
+
+    assert.equal(exitCode, 0, `stdout:\n${stdout}\nstderr:\n${stderr}`);
+    assert.match(stdout, /Local: http:\/\/localhost:\d+/);
+    assert.match(stderr, /lizardtail: detected local server on http:\/\/127\.0\.0\.1:\d+/);
+    assert.match(stderr, /lizardtail: serving via Tailscale: https:\/\/test-host\.tailnet\.ts\.net/);
+
+    const calls = await readFile(tailscaleLog, "utf8");
+    assert.match(calls, /status/);
+    assert.match(calls, /serve --bg http:\/\/127\.0\.0\.1:\d+/);
+    assert.match(calls, /status --json/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});

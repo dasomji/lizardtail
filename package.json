@@ -1,0 +1,46 @@
+{
+  "name": "lizardtail",
+  "version": "0.1.0",
+  "description": "Run a dev server command, detect its port, expose it with Tailscale Serve, and print the tailnet URL.",
+  "type": "module",
+  "bin": {
+    "lizardtail": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/index.ts",
+    "test": "npm run build && tsx --test tests/**/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepare": "npm run build"
+  },
+  "keywords": [
+    "tailscale",
+    "serve",
+    "dev-server",
+    "cli",
+    "tailnet",
+    "localhost"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "homepage": "https://github.com/dasomji/lizardtail#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dasomji/lizardtail.git"
+  },
+  "bugs": {
+    "url": "https://github.com/dasomji/lizardtail/issues"
+  }
+}
