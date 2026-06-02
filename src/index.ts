@@ -3,9 +3,8 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, realpathSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
-import { request as httpsRequest } from "node:https";
 import net from "node:net";
 import path from "node:path";
 import process from "node:process";
@@ -25,12 +24,41 @@ export interface Options {
 export const DEFAULT_TIMEOUT_MS = 30_000;
 export const DEFAULT_TAILSCALE_HTTPS_PORT = 8443;
 const MAX_AUTO_TAILSCALE_HTTPS_PORT = 8999;
-const FORBIDDEN_NICK_LOCAL_PORTS = new Set([80, 443, 8000, 6001, 6002]);
+const CONFIG_FILENAMES = ["lizardtail.config.json", ".lizardtail.json"];
 const DETECTION_SETTLE_MS = 1_500;
+
+type BlockedPortScope = "local" | "tailscale" | "both";
+
+interface BlockedPortRule {
+  port: number;
+  scope?: BlockedPortScope;
+  reason: string;
+}
+
+interface LizardtailConfig {
+  blockedPorts: BlockedPortRule[];
+}
+
+const DEFAULT_CONFIG: LizardtailConfig = {
+  blockedPorts: [
+    {
+      port: 80,
+      scope: "both",
+      reason: "Common HTTP ingress/proxy port. Blocking prevents dev exposure from replacing a production web route.",
+    },
+    {
+      port: 443,
+      scope: "both",
+      reason: "Common HTTPS ingress/proxy port. Lizard Tail defaults to high explicit Tailscale HTTPS ports instead.",
+    },
+  ],
+};
 
 export function printUsage(): void {
   console.error(`Usage: lizardtail [options] -- <command> [args...]
        lizardtail [options] <command> [args...]
+       lizardtail help [topic]
+       lizardtail config init
 
 Options:
   --port <port>        Expose this port instead of detecting one from output.
@@ -49,12 +77,93 @@ Examples:
   lizardtail --port 3000 npm run dev
   lizardtail --tailscale-port 8450 pnpm dev
   lizardtail --public pnpm dev
+  lizardtail help config
+`);
+}
+
+function printDetailedHelp(topic?: string): void {
+  if (topic === "config") {
+    console.log(`Lizard Tail configuration
+
+Config files, searched from the current working directory:
+  1. lizardtail.config.json
+  2. .lizardtail.json
+
+You can also set LIZARDTAIL_CONFIG=/path/to/config.json.
+
+Create a starter config:
+  lizardtail config init
+
+Config shape:
+${JSON.stringify(DEFAULT_CONFIG, null, 2)}
+
+blockedPorts entries:
+  port    Number from 1 to 65535.
+  scope   "local", "tailscale", or "both". Defaults to "both".
+  reason  Human-readable explanation shown when the rule blocks an action.
+
+If a config file exists, its blockedPorts list replaces the built-in default list. Keep the default entries if they matter for your host, or edit/remove them if your environment is different.`);
+    return;
+  }
+
+  console.log(`Lizard Tail
+
+Run a dev server command, detect its local port, and expose it through Tailscale.
+
+Common usage:
+  lizardtail pnpm dev
+  lizardtail --port 3000 npm run dev
+  lizardtail --tailscale-port 8450 pnpm dev
+  lizardtail --public pnpm dev
+
+Private vs public:
+  Default: private tailnet-only Tailscale Serve.
+  --public / --funnel: public internet exposure through Tailscale Funnel.
+
+Safety:
+  Lizard Tail always uses explicit high Tailscale HTTPS ports by default (${DEFAULT_TAILSCALE_HTTPS_PORT}+).
+  It never runs bare tailscale serve/funnel target commands.
+  It only removes mappings it created in the current process.
+  Ports can be blocked with lizardtail.config.json or .lizardtail.json.
+
+Help topics:
+  lizardtail help config
+
+Other commands:
+  lizardtail config init      Write a starter config file.
 `);
 }
 
 function usage(): never {
   printUsage();
   process.exit(2);
+}
+
+async function handleMetaCommand(argv: string[]): Promise<boolean> {
+  if (argv[0] === "help") {
+    printDetailedHelp(argv[1]);
+    return true;
+  }
+
+  if (argv[0] === "config" && argv[1] === "init") {
+    await writeDefaultConfigFile();
+    return true;
+  }
+
+  if (argv[0] === "init-config") {
+    await writeDefaultConfigFile();
+    return true;
+  }
+
+  return false;
+}
+
+async function writeDefaultConfigFile(): Promise<void> {
+  const configPath = path.join(process.cwd(), "lizardtail.config.json");
+  if (existsSync(configPath)) throw new Error(`${configPath} already exists`);
+
+  await writeFile(configPath, `${JSON.stringify(DEFAULT_CONFIG, null, 2)}\n`);
+  console.log(`wrote ${configPath}`);
 }
 
 export function parseArgs(argv: string[]): Options {
@@ -189,6 +298,68 @@ function parseTimeout(value: string): number {
     process.exit(2);
   }
   return timeout;
+}
+
+async function loadConfig(): Promise<LizardtailConfig> {
+  const configPath = findConfigPath();
+  if (!configPath) return DEFAULT_CONFIG;
+
+  try {
+    const raw = await readFile(configPath, "utf8");
+    const parsed = JSON.parse(raw) as Partial<LizardtailConfig>;
+    return normalizeConfig(parsed, configPath);
+  } catch (error) {
+    if (error instanceof SyntaxError) throw new Error(`failed to parse ${configPath}: ${error.message}`);
+    throw error;
+  }
+}
+
+function findConfigPath(): string | undefined {
+  if (process.env.LIZARDTAIL_CONFIG) return process.env.LIZARDTAIL_CONFIG;
+
+  for (const filename of CONFIG_FILENAMES) {
+    const candidate = path.join(process.cwd(), filename);
+    if (existsSync(candidate)) return candidate;
+  }
+
+  return undefined;
+}
+
+function normalizeConfig(config: Partial<LizardtailConfig>, source: string): LizardtailConfig {
+  if (!Array.isArray(config.blockedPorts)) {
+    throw new Error(`${source} must contain a blockedPorts array`);
+  }
+
+  return {
+    blockedPorts: config.blockedPorts.map((rule, index) => normalizeBlockedPortRule(rule, `${source}:blockedPorts[${index}]`)),
+  };
+}
+
+function normalizeBlockedPortRule(rule: Partial<BlockedPortRule>, label: string): BlockedPortRule {
+  const port = Number(rule.port);
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new Error(`${label}.port must be an integer from 1 to 65535`);
+  }
+
+  const scope = rule.scope ?? "both";
+  if (scope !== "local" && scope !== "tailscale" && scope !== "both") {
+    throw new Error(`${label}.scope must be "local", "tailscale", or "both"`);
+  }
+
+  const reason = typeof rule.reason === "string" && rule.reason.trim() ? rule.reason.trim() : "Blocked by lizardtail configuration.";
+  return { port, scope, reason };
+}
+
+function findBlockedPortRule(config: LizardtailConfig, port: number, scope: Exclude<BlockedPortScope, "both">): BlockedPortRule | undefined {
+  return config.blockedPorts.find((rule) => rule.port === port && (rule.scope === "both" || rule.scope === scope || rule.scope === undefined));
+}
+
+function assertPortAllowed(config: LizardtailConfig, port: number, scope: Exclude<BlockedPortScope, "both">): void {
+  const rule = findBlockedPortRule(config, port, scope);
+  if (!rule) return;
+
+  const label = scope === "tailscale" ? "Tailscale HTTPS" : "local";
+  throw new Error(`refusing to use ${label} port ${port}: ${rule.reason}`);
 }
 
 export function stripAnsi(input: string): string {
@@ -405,10 +576,6 @@ async function getTailscaleExposureStatus(mode: ExposureMode): Promise<Tailscale
   }
 }
 
-async function getTailscaleServeStatus(): Promise<TailscaleExposureStatus | undefined> {
-  return getTailscaleExposureStatus("serve");
-}
-
 function collectTailscaleStatusPorts(status: TailscaleExposureStatus | undefined, usedPorts: Set<number>): void {
   if (!status?.Web) return;
 
@@ -419,46 +586,22 @@ function collectTailscaleStatusPorts(status: TailscaleExposureStatus | undefined
   }
 }
 
-async function getTailscaleServeProxy(port: number): Promise<string | undefined> {
-  const status = await getTailscaleServeStatus();
-  if (!status?.Web) return undefined;
-
-  const suffix = `:${port}`;
-  const webKey = Object.keys(status.Web).find((key) => key.endsWith(suffix));
-  if (!webKey) return undefined;
-
-  return status.Web[webKey]?.Handlers?.["/"]?.Proxy;
-}
-
-function normalizeProxyTarget(target: string): string {
-  return target.replace("http://localhost:", "http://127.0.0.1:").replace(/\/$/, "");
-}
-
-async function resolveTailscaleHttpsPort(_target: string, requestedPort?: number): Promise<number> {
+async function resolveTailscaleHttpsPort(_target: string, requestedPort?: number, config = DEFAULT_CONFIG): Promise<number> {
   if (requestedPort !== undefined) return requestedPort;
-  return chooseTailscaleHttpsPort();
+  return chooseTailscaleHttpsPort(undefined, config);
 }
 
-async function chooseTailscaleHttpsPort(excludedPort?: number): Promise<number> {
+async function chooseTailscaleHttpsPort(excludedPort?: number, config = DEFAULT_CONFIG): Promise<number> {
   const usedPorts = new Set<number>();
   collectTailscaleStatusPorts(await getTailscaleExposureStatus("serve"), usedPorts);
   collectTailscaleStatusPorts(await getTailscaleExposureStatus("funnel"), usedPorts);
 
   for (let port = DEFAULT_TAILSCALE_HTTPS_PORT; port <= MAX_AUTO_TAILSCALE_HTTPS_PORT; port += 1) {
-    if (port !== excludedPort && !usedPorts.has(port)) return port;
+    if (port === excludedPort || usedPorts.has(port) || findBlockedPortRule(config, port, "tailscale")) continue;
+    return port;
   }
 
   throw new Error("could not find an available Tailscale HTTPS port");
-}
-
-function assertSafeTailscaleHttpsPort(port: number): void {
-  if (port === 443) {
-    throw new Error("refusing to use Tailscale HTTPS port 443; Lizard Tail only uses explicit high ports so it cannot interfere with Coolify/Traefik");
-  }
-
-  if (port < DEFAULT_TAILSCALE_HTTPS_PORT) {
-    throw new Error(`refusing to use Tailscale HTTPS port ${port}; choose an explicit high port (${DEFAULT_TAILSCALE_HTTPS_PORT}+)`);
-  }
 }
 
 async function writeLaravelHotFile(viteUrl: string): Promise<string | undefined> {
@@ -540,133 +683,21 @@ function corsHeaders(): Record<string, string> {
   };
 }
 
-interface NickPreflight {
-  isNick: boolean;
-  reason?: string;
-}
-
-async function detectNickHost(): Promise<NickPreflight> {
-  const hostname = await exec("hostname", []).then(({ stdout }) => stdout.trim()).catch(() => "");
-  if (/^(coolify|nick)$/i.test(hostname)) return { isNick: true, reason: `hostname is ${hostname}` };
-
-  const dockerProxy = await getCoolifyProxyStatus().catch(() => undefined);
-  if (dockerProxy?.running) return { isNick: true, reason: "coolify-proxy container is present" };
-
-  return { isNick: false };
-}
-
-async function getCoolifyProxyStatus(): Promise<{ available: boolean; running: boolean; output: string }> {
-  try {
-    const { stdout } = await exec("docker", ["ps", "--filter", "name=coolify-proxy", "--format", "{{.Names}} {{.Status}}"]);
-    const output = stdout.trim();
-    return { available: true, running: /coolify-proxy/i.test(output) && /\b(up|running|healthy)\b/i.test(output), output };
-  } catch (error) {
-    const message = errorMessage(error).toLowerCase();
-    if (message.includes("no such file") || message.includes("not found") || message.includes("executable file not found")) {
-      return { available: false, running: false, output: "" };
-    }
-    throw error;
-  }
-}
-
-async function runNickPreflight(localPort: number, tailscalePort: number, mode: ExposureMode): Promise<void> {
-  const nick = await detectNickHost();
-  if (!nick.isNick) return;
-
-  if (FORBIDDEN_NICK_LOCAL_PORTS.has(localPort)) {
-    throw new Error(`refusing to expose local port ${localPort} on Nick; Coolify safety forbids ports 80, 443, 8000, 6001, and 6002`);
-  }
-
-  assertSafeTailscaleHttpsPort(tailscalePort);
-
-  const dockerProxy = await getCoolifyProxyStatus();
-  if (dockerProxy.available && !dockerProxy.running) {
-    throw new Error("refusing to expose on Nick because docker is available but coolify-proxy is not running/healthy");
-  }
-
-  const { stdout: sockets } = await exec("ss", ["-tulpn"]);
-  assertCoolifyRootPortsSafe(sockets, dockerProxy.running);
-
-  await exec("tailscale", ["serve", "status"]);
-
-  console.error(`lizardtail: Nick safety preflight passed (${nick.reason}); using explicit Tailscale ${mode === "funnel" ? "Funnel" : "Serve"} HTTPS port ${tailscalePort}`);
-}
-
-function assertCoolifyRootPortsSafe(socketOutput: string, coolifyProxyRunning: boolean): void {
-  const unsafeLines = socketOutput
-    .split(/\r?\n/)
-    .filter((line) => socketLineUsesPort(line, 80) || socketLineUsesPort(line, 443))
-    .filter((line) => {
-      if (/\b(coolify|traefik|docker-proxy)\b/i.test(line)) return false;
-      if (coolifyProxyRunning && !/users:\(/i.test(line)) return false;
-      return true;
-    });
-
-  if (unsafeLines.length > 0) {
-    throw new Error(`refusing to expose on Nick because ports 80/443 are not clearly owned by Coolify/Traefik:\n${unsafeLines.join("\n")}`);
-  }
-}
-
-function socketLineUsesPort(line: string, port: number): boolean {
-  return new RegExp(`(?:^|[\\s:])(?:\\*|0\\.0\\.0\\.0|127\\.0\\.0\\.1|\\[::\\]|::|\\S+):${port}(?:\\s|$)`).test(line);
-}
-
-async function runNickPostflight(exposures: TailscaleExposure[]): Promise<void> {
-  const nick = await detectNickHost();
-  if (!nick.isNick) return;
-
-  for (const exposure of exposures) {
-    assertSafeTailscaleHttpsPort(exposure.httpsPort);
-    const result = await checkHttpsUrl(exposure.url);
-    if (!result.ok) {
-      throw new Error(`Nick postflight failed: ${exposure.url} was not reachable on HTTPS port ${exposure.httpsPort}: ${result.message}`);
-    }
-  }
-
-  const coolify = await checkHttpsUrl("https://coolify.audiopoesis.com/login");
-  if (coolify.statusCode === 521) {
-    throw new Error("Nick postflight failed: https://coolify.audiopoesis.com/login returned Cloudflare 521");
-  }
-
-  console.error(`lizardtail: Nick postflight passed; Coolify login returned ${coolify.statusCode ?? "no HTTP status but not 521"}`);
-  for (const exposure of exposures) {
-    console.error(`lizardtail: cleanup command: tailscale ${exposure.mode} --https=${exposure.httpsPort} off`);
-  }
-}
-
-async function checkHttpsUrl(url: string): Promise<{ ok: boolean; statusCode?: number; message: string }> {
-  return new Promise((resolve) => {
-    const request = httpsRequest(url, { method: "GET", rejectUnauthorized: false, timeout: 5_000 }, (response) => {
-      response.resume();
-      response.on("end", () => {
-        const statusCode = response.statusCode;
-        resolve({ ok: statusCode !== undefined && statusCode >= 200 && statusCode < 500, statusCode, message: `HTTP ${statusCode ?? "unknown"}` });
-      });
-    });
-
-    request.on("timeout", () => {
-      request.destroy();
-      resolve({ ok: false, message: "timeout" });
-    });
-    request.on("error", (error) => resolve({ ok: false, message: error.message }));
-    request.end();
-  });
-}
-
 interface TailscaleExposure {
   url: string;
   httpsPort: number;
   mode: ExposureMode;
 }
 
-async function exposeWithTailscaleDetailed(host: string, port: number, tailscalePort?: number, publicExposure = false): Promise<TailscaleExposure> {
+async function exposeWithTailscaleDetailed(host: string, port: number, tailscalePort?: number, publicExposure = false, config?: LizardtailConfig): Promise<TailscaleExposure> {
+  const resolvedConfig = config ?? (await loadConfig());
+  assertPortAllowed(resolvedConfig, port, "local");
   await exec("tailscale", ["status"]);
 
   const target = `http://${host}:${port}`;
-  const resolvedTailscalePort = await resolveTailscaleHttpsPort(target, tailscalePort);
-  assertSafeTailscaleHttpsPort(resolvedTailscalePort);
+  const resolvedTailscalePort = await resolveTailscaleHttpsPort(target, tailscalePort, resolvedConfig);
+  assertPortAllowed(resolvedConfig, resolvedTailscalePort, "tailscale");
   const mode: ExposureMode = publicExposure ? "funnel" : "serve";
-  await runNickPreflight(port, resolvedTailscalePort, mode);
 
   try {
     await exec("tailscale", tailscaleExposeCommand(target, resolvedTailscalePort, mode));
@@ -704,12 +735,15 @@ export async function exposeWithTailscale(host: string, port: number, tailscaleP
 }
 
 async function removeTailscaleExposurePort(port: number, mode: ExposureMode): Promise<void> {
-  assertSafeTailscaleHttpsPort(port);
   await exec("tailscale", [mode, `--https=${port}`, "off"]);
 }
 
 export async function main(): Promise<void> {
-  const options = parseArgs(process.argv.slice(2));
+  const argv = process.argv.slice(2);
+  if (await handleMetaCommand(argv)) return;
+
+  const options = parseArgs(argv);
+  const config = await loadConfig();
   const [command, ...args] = options.command;
   const tailscaleDnsName = await getTailscaleDnsName().catch(() => undefined);
   const childEnv: NodeJS.ProcessEnv = { ...process.env, FORCE_COLOR: process.env.FORCE_COLOR ?? "1" };
@@ -753,11 +787,12 @@ export async function main(): Promise<void> {
     exposing = (async () => {
       const localUrl = `http://${options.host}:${port}`;
       console.error(`\nlizardtail: detected local server on ${localUrl}`);
+      assertPortAllowed(config, port, "local");
       if (options.openCheck) await waitForOpenPort(options.host, port, 10_000);
-      const exposure = await exposeWithTailscaleDetailed(options.host, port, options.tailscalePort, options.public);
+      const exposure = await exposeWithTailscaleDetailed(options.host, port, options.tailscalePort, options.public, config);
       createdTailscalePorts.set(exposure.httpsPort, exposure.mode);
       console.error(`lizardtail: serving via Tailscale: ${exposure.url}`);
-      await runNickPostflight([exposure]);
+      console.error(`lizardtail: cleanup command: tailscale ${exposure.mode} --https=${exposure.httpsPort} off`);
       console.error("");
     })().catch((error: unknown) => {
       console.error(`lizardtail: failed to expose server: ${errorMessage(error)}`);
@@ -774,17 +809,19 @@ export async function main(): Promise<void> {
       const viteLocalUrl = `http://${viteHost}:${vitePort}`;
       console.error(`\nlizardtail: detected Laravel app server on ${appLocalUrl}`);
       console.error(`lizardtail: detected Vite asset server on ${viteLocalUrl}`);
+      assertPortAllowed(config, appPort, "local");
+      assertPortAllowed(config, vitePort, "local");
 
       if (options.openCheck) {
         await waitForOpenPort(options.host, appPort, 10_000);
         await waitForOpenPort(viteHost, vitePort, 10_000);
       }
 
-      const appExposure = await exposeWithTailscaleDetailed(options.host, appPort, options.tailscalePort, options.public);
+      const appExposure = await exposeWithTailscaleDetailed(options.host, appPort, options.tailscalePort, options.public, config);
       createdTailscalePorts.set(appExposure.httpsPort, appExposure.mode);
       const viteProxy = await startCorsProxy(viteHost, vitePort);
-      const viteTailscalePort = options.viteTailscalePort ?? (await chooseTailscaleHttpsPort(appExposure.httpsPort));
-      const viteExposure = await exposeWithTailscaleDetailed(viteProxy.host, viteProxy.port, viteTailscalePort, options.public);
+      const viteTailscalePort = options.viteTailscalePort ?? (await chooseTailscaleHttpsPort(appExposure.httpsPort, config));
+      const viteExposure = await exposeWithTailscaleDetailed(viteProxy.host, viteProxy.port, viteTailscalePort, options.public, config);
       createdTailscalePorts.set(viteExposure.httpsPort, viteExposure.mode);
       const hotPath = await writeLaravelHotFile(viteExposure.url);
 
@@ -792,7 +829,8 @@ export async function main(): Promise<void> {
       console.error(`lizardtail: serving Vite assets via Tailscale: ${viteExposure.url}`);
       console.error(`lizardtail: proxying Vite through local CORS proxy: http://${viteProxy.host}:${viteProxy.port} -> ${viteLocalUrl}`);
       if (hotPath) console.error(`lizardtail: wrote Laravel Vite hot file: ${hotPath}`);
-      await runNickPostflight([appExposure, viteExposure]);
+      console.error(`lizardtail: cleanup command: tailscale ${appExposure.mode} --https=${appExposure.httpsPort} off`);
+      console.error(`lizardtail: cleanup command: tailscale ${viteExposure.mode} --https=${viteExposure.httpsPort} off`);
       console.error("");
     })().catch((error: unknown) => {
       console.error(`lizardtail: failed to expose Laravel/Vite servers: ${errorMessage(error)}`);

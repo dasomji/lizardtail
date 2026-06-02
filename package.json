@@ -1,7 +1,7 @@
 {
   "name": "lizardtail",
   "version": "0.1.0",
-  "description": "Run a dev server command, detect its port, expose it with Tailscale Serve, and print the tailnet URL.",
+  "description": "Run a dev server command, detect its port, expose it with Tailscale Serve or Funnel, and print the URL.",
   "type": "module",
   "bin": {
     "lizardtail": "dist/index.js"

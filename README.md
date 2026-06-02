@@ -1,6 +1,6 @@
 # lizardtail
 
-`lizardtail` runs a command, watches its output for a localhost server port, exposes that port with [Tailscale Serve](https://tailscale.com/kb/1242/tailscale-serve), and prints the private tailnet URL.
+`lizardtail` runs a command, watches its output for a localhost server port, exposes that port with [Tailscale Serve](https://tailscale.com/kb/1242/tailscale-serve), and prints the private tailnet URL. Pass `--public` to use Tailscale Funnel intentionally.
 
 ```bash
 lizardtail pnpm dev
@@ -32,7 +32,7 @@ Use it when your dev server is running on a remote machine and you want to open 
 - Stays private to your tailnet by default.
 - Supports `--public` / `--funnel` for intentional public internet sharing through Tailscale Funnel.
 - Cleans up the Tailscale Serve/Funnel mappings it created when the child command exits or you press `Ctrl+C`.
-- Has Nick/Coolify safety guardrails: never touches Tailscale HTTPS 443, never uses bare Serve/Funnel commands, and refuses Coolify internal ports.
+- Has editable blocked-port guardrails with default entries for common HTTP/HTTPS ingress ports.
 
 ## Requirements
 
@@ -96,6 +96,8 @@ node dist/index.js pnpm dev
 ```bash
 lizardtail [options] -- <command> [args...]
 lizardtail [options] <command> [args...]
+lizardtail help [topic]
+lizardtail config init
 ```
 
 Use `--` when the command itself has flags that could be confused for `lizardtail` options:
@@ -103,6 +105,15 @@ Use `--` when the command itself has flags that could be confused for `lizardtai
 ```bash
 lizardtail -- npm run dev -- --host 0.0.0.0
 ```
+
+### Help
+
+```bash
+lizardtail help
+lizardtail help config
+```
+
+These commands are meant for both humans and coding agents: they describe usage, safety behavior, public/private exposure, and config file shape without needing to open the README.
 
 ### Options
 
@@ -212,18 +223,47 @@ https://my-host.tailabc.ts.net:8443
 
 Use this only for apps you are comfortable exposing publicly. Stop `lizardtail` with `Ctrl+C` to remove the Funnel mapping it created.
 
-### Nick / Coolify safety
+### Editable blocked ports
 
-Nick is treated as a production-like Coolify host. On Nick, `lizardtail` prioritizes Coolify availability over dev-server exposure:
+Lizard Tail ships with a small default blocked-port list for common HTTP/HTTPS ingress ports:
 
-- detects Nick by hostname `Nick`/`Coolify` or by a running `coolify-proxy` container;
-- refuses local ports `80`, `443`, `8000`, `6001`, and `6002`;
-- refuses Tailscale HTTPS `443` and any non-high Tailscale HTTPS port;
-- never runs bare `tailscale serve <target>` or bare `tailscale funnel <target>`;
-- never runs `tailscale serve reset`, `tailscale funnel reset`, or `--https=443 off`;
-- runs `ss -tulpn`, checks `coolify-proxy` when Docker is available, and reads `tailscale serve status` before adding a high-port mapping;
-- after serving, verifies the assigned high-port URL and checks that `https://coolify.audiopoesis.com/login` is not returning Cloudflare `521`;
-- prints the exact cleanup command for mappings it created.
+```json
+{
+  "blockedPorts": [
+    {
+      "port": 80,
+      "scope": "both",
+      "reason": "Common HTTP ingress/proxy port. Blocking prevents dev exposure from replacing a production web route."
+    },
+    {
+      "port": 443,
+      "scope": "both",
+      "reason": "Common HTTPS ingress/proxy port. Lizard Tail defaults to high explicit Tailscale HTTPS ports instead."
+    }
+  ]
+}
+```
+
+Create an editable config file:
+
+```bash
+lizardtail config init
+```
+
+Lizard Tail searches the current working directory for:
+
+1. `lizardtail.config.json`
+2. `.lizardtail.json`
+
+You can also set `LIZARDTAIL_CONFIG=/path/to/config.json`.
+
+Each blocked-port entry has:
+
+- `port`: number from `1` to `65535`
+- `scope`: `"local"`, `"tailscale"`, or `"both"` — defaults to `"both"`
+- `reason`: explanation shown when the rule blocks an action
+
+If a config file exists, its `blockedPorts` list replaces the built-in default list. Keep, edit, or remove entries based on your own host.
 
 ### Longer startup timeout
 
@@ -237,9 +277,8 @@ lizardtail --timeout 60000 pnpm dev
 2. It streams the command output to your terminal.
 3. It scans recent output for a local port.
 4. Once it finds a port, it waits for `127.0.0.1:<port>` or the configured `--host` to accept connections.
-5. It chooses the first free Tailscale HTTPS port from `8443` upward, unless `--tailscale-port` was provided. Port `443` is always refused.
-6. On Nick, it runs the Coolify safety preflight before changing Tailscale config.
-7. It runs Tailscale Serve for private tailnet-only access:
+5. It chooses the first free Tailscale HTTPS port from `8443` upward, unless `--tailscale-port` was provided. Ports in the configured blocked-port list are refused or skipped.
+6. It runs Tailscale Serve for private tailnet-only access:
 
    ```bash
    tailscale serve --bg --https <tailscale-port> http://<host>:<port>
@@ -253,7 +292,7 @@ lizardtail --timeout 60000 pnpm dev
 
    On older Tailscale versions, if that form fails for `127.0.0.1`/`localhost`, it falls back to the same command with just `<port>` as the target.
 
-8. It reads `tailscale status --json`, extracts the current device's MagicDNS name, and prints:
+7. It reads `tailscale status --json`, extracts the current device's MagicDNS name, and prints:
 
    ```text
    https://<device-name>.<tailnet>.ts.net:<tailscale-port>
