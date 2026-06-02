@@ -29,7 +29,9 @@ Use it when your dev server is running on a remote machine and you want to open 
 - Supports `--tailscale-port` when you want the MagicDNS URL to include a specific HTTPS port.
 - Detects Laravel + Vite dev output, exposes both servers, rewrites Laravel's `public/hot` file to the Tailscale Vite URL, and proxies Vite assets with CORS headers so module scripts can load cross-origin.
 - Uses a stable alternate Tailscale HTTPS port by default: first free port from `8443` upward.
-- Cleans up the Tailscale Serve mappings it created when the child command exits or you press `Ctrl+C`.
+- Stays private to your tailnet by default.
+- Supports `--public` / `--funnel` for intentional public internet sharing through Tailscale Funnel.
+- Cleans up the Tailscale Serve/Funnel mappings it created when the child command exits or you press `Ctrl+C`.
 
 ## Requirements
 
@@ -37,7 +39,8 @@ Use it when your dev server is running on a remote machine and you want to open 
 - Tailscale installed and available as `tailscale` on `PATH`.
 - The device must be logged into Tailscale.
 - Tailscale Serve must be available for the device/tailnet.
-- Your user must be allowed to update Tailscale Serve config. If `tailscale serve` says access is denied, run this once:
+- For `--public`, Tailscale Funnel must be enabled for the device/tailnet.
+- Your user must be allowed to update Tailscale Serve/Funnel config. If `tailscale serve` or `tailscale funnel` says access is denied, run this once:
 
   ```bash
   sudo tailscale set --operator=$USER
@@ -48,9 +51,11 @@ Check Tailscale before using `lizardtail`:
 ```bash
 tailscale status
 tailscale serve --help
+# Optional, only for --public:
+tailscale funnel --help
 ```
 
-`lizardtail` exposes services to your private tailnet via Tailscale Serve. It does **not** use Tailscale Funnel and does not publish your server to the public internet.
+`lizardtail` exposes services to your private tailnet via Tailscale Serve by default. It only uses Tailscale Funnel, which publishes to the public internet, when you explicitly pass `--public` or `--funnel`.
 
 ## Installation
 
@@ -107,6 +112,7 @@ lizardtail -- npm run dev -- --host 0.0.0.0
 | `--timeout <ms>` | `30000` | How long to wait for a port to appear in command output. |
 | `--tailscale-port <port>` | first free `8443+` | Expose the main app on this Tailscale HTTPS port and print it in the MagicDNS URL. Alias: `--https-port`. |
 | `--vite-tailscale-port <port>` | first free `8443+` | Expose a detected Laravel Vite asset server on this Tailscale HTTPS port. Alias: `--vite-https-port`. |
+| `--public`, `--funnel` | disabled | Use Tailscale Funnel for public internet access instead of private tailnet-only Serve. |
 | `--no-open-check` | enabled | Skip waiting for the local port to accept connections before calling Tailscale. |
 | `-h`, `--help` | | Show help. |
 
@@ -183,6 +189,28 @@ If your app server lands on a known port and you only want to expose that server
 lizardtail --port 8001 composer run dev
 ```
 
+### Public internet sharing
+
+By default, URLs are only reachable from devices in your tailnet. To intentionally publish through Tailscale Funnel:
+
+```bash
+lizardtail --public pnpm dev
+```
+
+or:
+
+```bash
+lizardtail --funnel pnpm dev
+```
+
+This prints a public HTTPS URL such as:
+
+```text
+https://my-host.tailabc.ts.net:8443
+```
+
+Use this only for apps you are comfortable exposing publicly. Stop `lizardtail` with `Ctrl+C` to remove the Funnel mapping it created.
+
 ### Longer startup timeout
 
 ```bash
@@ -196,17 +224,19 @@ lizardtail --timeout 60000 pnpm dev
 3. It scans recent output for a local port.
 4. Once it finds a port, it waits for `127.0.0.1:<port>` or the configured `--host` to accept connections.
 5. It chooses the first free Tailscale HTTPS port from `8443` upward, unless `--tailscale-port` was provided.
-6. It runs:
+6. It runs Tailscale Serve for private tailnet-only access:
 
    ```bash
    tailscale serve --bg --https <tailscale-port> http://<host>:<port>
    ```
 
-   On older Tailscale versions, if that form fails for `127.0.0.1`/`localhost`, it falls back to:
+   With `--public` / `--funnel`, it runs Tailscale Funnel for public internet access:
 
    ```bash
-   tailscale serve --bg --https <tailscale-port> <port>
+   tailscale funnel --bg --https <tailscale-port> http://<host>:<port>
    ```
+
+   On older Tailscale versions, if that form fails for `127.0.0.1`/`localhost`, it falls back to the same command with just `<port>` as the target.
 
 7. It reads `tailscale status --json`, extracts the current device's MagicDNS name, and prints:
 
@@ -216,10 +246,12 @@ lizardtail --timeout 60000 pnpm dev
 
 ## Shutdown behavior
 
-When the child command exits, or when you press `Ctrl+C`, `lizardtail` removes the Tailscale Serve mappings it created for that run:
+When the child command exits, or when you press `Ctrl+C`, `lizardtail` removes the Tailscale mappings it created for that run:
 
 ```bash
 tailscale serve --https=<port> off
+# or, with --public:
+tailscale funnel --https=<port> off
 ```
 
 It only tracks ports created by the current `lizardtail` process.

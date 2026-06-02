@@ -18,6 +18,7 @@ export interface Options {
   viteTailscalePort?: number;
   timeoutMs: number;
   openCheck: boolean;
+  public: boolean;
 }
 
 export const DEFAULT_TIMEOUT_MS = 30_000;
@@ -36,6 +37,7 @@ Options:
                        Expose the main app on this Tailscale HTTPS port. Default: first free ${DEFAULT_TAILSCALE_HTTPS_PORT}+ port.
   --vite-tailscale-port <port>
                        Expose a detected Laravel Vite server on this Tailscale HTTPS port.
+  --public, --funnel   Expose publicly on the internet with Tailscale Funnel instead of private tailnet-only Serve.
   --no-open-check      Skip waiting for the local port to accept connections.
   -h, --help           Show this help.
 
@@ -43,6 +45,7 @@ Examples:
   lizardtail pnpm dev
   lizardtail --port 3000 npm run dev
   lizardtail --tailscale-port 8450 pnpm dev
+  lizardtail --public pnpm dev
 `);
 }
 
@@ -57,6 +60,7 @@ export function parseArgs(argv: string[]): Options {
     host: "127.0.0.1",
     timeoutMs: DEFAULT_TIMEOUT_MS,
     openCheck: true,
+    public: false,
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -74,6 +78,11 @@ export function parseArgs(argv: string[]): Options {
 
     if (arg === "--no-open-check") {
       options.openCheck = false;
+      continue;
+    }
+
+    if (arg === "--public" || arg === "--funnel") {
+      options.public = true;
       continue;
     }
 
@@ -283,18 +292,17 @@ function isTailscaleServePermissionError(error: unknown): boolean {
   return message.includes("access denied") && (message.includes("sudo tailscale serve") || message.includes("operator"));
 }
 
-function tailscaleServeCommand(target: string, tailscalePort?: number): string[] {
-  const args = ["serve", "--bg"];
-  if (tailscalePort !== undefined) args.push("--https", String(tailscalePort));
-  args.push(target);
-  return args;
+type ExposureMode = "serve" | "funnel";
+
+function tailscaleExposeCommand(target: string, tailscalePort: number, mode: ExposureMode): string[] {
+  return [mode, "--bg", "--https", String(tailscalePort), target];
 }
 
 function tailscaleUrl(dnsName: string, tailscalePort?: number): string {
   return tailscalePort === undefined ? `https://${dnsName}` : `https://${dnsName}:${tailscalePort}`;
 }
 
-function tailscaleServePermissionHelp(target: string, tailscalePort?: number): string {
+function tailscaleServePermissionHelp(target: string, tailscalePort: number, mode: ExposureMode): string {
   return `Tailscale refused to update Serve config without elevated privileges.
 
 Run this once to let your user manage Tailscale Serve:
@@ -305,7 +313,7 @@ Then rerun lizardtail.
 
 Or expose this server manually with:
 
-  sudo tailscale ${tailscaleServeCommand(target, tailscalePort).join(" ")}`;
+  sudo tailscale ${tailscaleExposeCommand(target, tailscalePort, mode).join(" ")}`;
 }
 
 async function exec(command: string, args: string[], opts: { input?: string; env?: NodeJS.ProcessEnv } = {}): Promise<{ stdout: string; stderr: string }> {
@@ -508,28 +516,30 @@ function corsHeaders(): Record<string, string> {
 interface TailscaleExposure {
   url: string;
   httpsPort: number;
+  mode: ExposureMode;
 }
 
-async function exposeWithTailscaleDetailed(host: string, port: number, tailscalePort?: number): Promise<TailscaleExposure> {
+async function exposeWithTailscaleDetailed(host: string, port: number, tailscalePort?: number, publicExposure = false): Promise<TailscaleExposure> {
   await exec("tailscale", ["status"]);
 
   const target = `http://${host}:${port}`;
   const resolvedTailscalePort = await resolveTailscaleHttpsPort(target, tailscalePort);
+  const mode: ExposureMode = publicExposure ? "funnel" : "serve";
 
   try {
-    await exec("tailscale", tailscaleServeCommand(target, resolvedTailscalePort));
+    await exec("tailscale", tailscaleExposeCommand(target, resolvedTailscalePort, mode));
   } catch (firstError) {
     if (isTailscaleServePermissionError(firstError)) {
-      throw new Error(tailscaleServePermissionHelp(target, resolvedTailscalePort));
+      throw new Error(tailscaleServePermissionHelp(target, resolvedTailscalePort, mode));
     }
 
     if (host !== "127.0.0.1" && host !== "localhost") throw firstError;
 
     try {
-      await exec("tailscale", tailscaleServeCommand(String(port), resolvedTailscalePort));
+      await exec("tailscale", tailscaleExposeCommand(String(port), resolvedTailscalePort, mode));
     } catch (fallbackError) {
       if (isTailscaleServePermissionError(fallbackError)) {
-        throw new Error(tailscaleServePermissionHelp(target, resolvedTailscalePort));
+        throw new Error(tailscaleServePermissionHelp(target, resolvedTailscalePort, mode));
       }
       throw fallbackError;
     }
@@ -539,20 +549,20 @@ async function exposeWithTailscaleDetailed(host: string, port: number, tailscale
   const status = JSON.parse(stdout) as { Self?: { DNSName?: string; TailscaleIPs?: string[] } };
   const dnsName = status.Self?.DNSName?.replace(/\.$/, "");
 
-  if (dnsName) return { url: tailscaleUrl(dnsName, resolvedTailscalePort), httpsPort: resolvedTailscalePort };
+  if (dnsName) return { url: tailscaleUrl(dnsName, resolvedTailscalePort), httpsPort: resolvedTailscalePort, mode };
 
   const ip = status.Self?.TailscaleIPs?.find((value) => /^\d+\.\d+\.\d+\.\d+$/.test(value));
-  if (ip) return { url: tailscaleUrl(ip, resolvedTailscalePort), httpsPort: resolvedTailscalePort };
+  if (ip) return { url: tailscaleUrl(ip, resolvedTailscalePort), httpsPort: resolvedTailscalePort, mode };
 
   throw new Error("could not determine this device's Tailscale DNS name or IP");
 }
 
-export async function exposeWithTailscale(host: string, port: number, tailscalePort?: number): Promise<string> {
-  return (await exposeWithTailscaleDetailed(host, port, tailscalePort)).url;
+export async function exposeWithTailscale(host: string, port: number, tailscalePort?: number, publicExposure = false): Promise<string> {
+  return (await exposeWithTailscaleDetailed(host, port, tailscalePort, publicExposure)).url;
 }
 
-async function removeTailscaleServePort(port: number): Promise<void> {
-  await exec("tailscale", ["serve", `--https=${port}`, "off"]);
+async function removeTailscaleExposurePort(port: number, mode: ExposureMode): Promise<void> {
+  await exec("tailscale", [mode, `--https=${port}`, "off"]);
 }
 
 export async function main(): Promise<void> {
@@ -576,15 +586,15 @@ export async function main(): Promise<void> {
   let exposing: Promise<void> | undefined;
   let recentOutput = "";
   let detectionTimer: NodeJS.Timeout | undefined;
-  const createdTailscalePorts = new Set<number>();
+  const createdTailscalePorts = new Map<number, ExposureMode>();
 
   const cleanupTailscaleServe = async () => {
-    for (const port of createdTailscalePorts) {
+    for (const [port, mode] of createdTailscalePorts) {
       try {
-        await removeTailscaleServePort(port);
-        console.error(`lizardtail: removed Tailscale Serve mapping on HTTPS port ${port}`);
+        await removeTailscaleExposurePort(port, mode);
+        console.error(`lizardtail: removed Tailscale ${mode === "funnel" ? "Funnel" : "Serve"} mapping on HTTPS port ${port}`);
       } catch (error) {
-        console.error(`lizardtail: failed to remove Tailscale Serve mapping on HTTPS port ${port}: ${errorMessage(error)}`);
+        console.error(`lizardtail: failed to remove Tailscale ${mode === "funnel" ? "Funnel" : "Serve"} mapping on HTTPS port ${port}: ${errorMessage(error)}`);
       }
     }
     createdTailscalePorts.clear();
@@ -601,8 +611,8 @@ export async function main(): Promise<void> {
       const localUrl = `http://${options.host}:${port}`;
       console.error(`\nlizardtail: detected local server on ${localUrl}`);
       if (options.openCheck) await waitForOpenPort(options.host, port, 10_000);
-      const exposure = await exposeWithTailscaleDetailed(options.host, port, options.tailscalePort);
-      createdTailscalePorts.add(exposure.httpsPort);
+      const exposure = await exposeWithTailscaleDetailed(options.host, port, options.tailscalePort, options.public);
+      createdTailscalePorts.set(exposure.httpsPort, exposure.mode);
       console.error(`lizardtail: serving via Tailscale: ${exposure.url}\n`);
     })().catch((error: unknown) => {
       console.error(`lizardtail: failed to expose server: ${errorMessage(error)}`);
@@ -625,12 +635,12 @@ export async function main(): Promise<void> {
         await waitForOpenPort(viteHost, vitePort, 10_000);
       }
 
-      const appExposure = await exposeWithTailscaleDetailed(options.host, appPort, options.tailscalePort);
-      createdTailscalePorts.add(appExposure.httpsPort);
+      const appExposure = await exposeWithTailscaleDetailed(options.host, appPort, options.tailscalePort, options.public);
+      createdTailscalePorts.set(appExposure.httpsPort, appExposure.mode);
       const viteProxy = await startCorsProxy(viteHost, vitePort);
       const viteTailscalePort = options.viteTailscalePort ?? (await chooseTailscaleHttpsPort(appExposure.httpsPort));
-      const viteExposure = await exposeWithTailscaleDetailed(viteProxy.host, viteProxy.port, viteTailscalePort);
-      createdTailscalePorts.add(viteExposure.httpsPort);
+      const viteExposure = await exposeWithTailscaleDetailed(viteProxy.host, viteProxy.port, viteTailscalePort, options.public);
+      createdTailscalePorts.set(viteExposure.httpsPort, viteExposure.mode);
       const hotPath = await writeLaravelHotFile(viteExposure.url);
 
       console.error(`lizardtail: serving Laravel via Tailscale: ${appExposure.url}`);

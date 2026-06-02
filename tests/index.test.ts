@@ -61,6 +61,7 @@ test("parseArgs parses options before the command", () => {
     port: 3000,
     timeoutMs: 5000,
     openCheck: false,
+    public: false,
   });
 });
 
@@ -70,6 +71,7 @@ test("parseArgs keeps command flags after -- delimiter", () => {
     host: "127.0.0.1",
     timeoutMs: 1000,
     openCheck: true,
+    public: false,
   });
 });
 
@@ -79,6 +81,7 @@ test("parseArgs uses documented defaults", () => {
     host: "127.0.0.1",
     timeoutMs: DEFAULT_TIMEOUT_MS,
     openCheck: true,
+    public: false,
   });
 });
 
@@ -90,6 +93,17 @@ test("parseArgs supports explicit Tailscale HTTPS ports", () => {
     viteTailscalePort: 8453,
     timeoutMs: DEFAULT_TIMEOUT_MS,
     openCheck: true,
+    public: false,
+  });
+});
+
+test("parseArgs supports public Funnel exposure", () => {
+  assert.deepEqual(parseArgs(["--public", "pnpm", "dev"]), {
+    command: ["pnpm", "dev"],
+    host: "127.0.0.1",
+    timeoutMs: DEFAULT_TIMEOUT_MS,
+    openCheck: true,
+    public: true,
   });
 });
 
@@ -129,6 +143,53 @@ exit 1
     assert.equal(url, "https://test-host.tailnet.ts.net:8450");
     const calls = await readFile(tailscaleLog, "utf8");
     assert.match(calls, /serve --bg --https 8450 http:\/\/127\.0\.0\.1:3001/);
+  } finally {
+    process.env.PATH = originalPath;
+    delete process.env.TAILSCALE_LOG;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("exposeWithTailscale can expose publicly with Tailscale Funnel", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "lizardtail-test-"));
+  const tailscalePath = path.join(tempDir, "tailscale");
+  const tailscaleLog = path.join(tempDir, "tailscale.log");
+  const originalPath = process.env.PATH;
+
+  await writeFile(
+    tailscalePath,
+    `#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$TAILSCALE_LOG"
+if [ "$1" = "status" ] && [ "$2" = "--json" ]; then
+  echo '{"Self":{"DNSName":"test-host.tailnet.ts.net."}}'
+  exit 0
+fi
+if [ "$1" = "status" ]; then
+  echo 'ok'
+  exit 0
+fi
+if [ "$1" = "serve" ] && [ "$2" = "status" ] && [ "$3" = "--json" ]; then
+  echo '{}'
+  exit 0
+fi
+if [ "$1" = "funnel" ]; then
+  echo 'funnel ok'
+  exit 0
+fi
+exit 1
+`,
+    { mode: 0o755 },
+  );
+
+  try {
+    process.env.PATH = `${tempDir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.TAILSCALE_LOG = tailscaleLog;
+
+    const url = await exposeWithTailscale("127.0.0.1", 3001, undefined, true);
+
+    assert.equal(url, "https://test-host.tailnet.ts.net:8443");
+    const calls = await readFile(tailscaleLog, "utf8");
+    assert.match(calls, /funnel --bg --https 8443 http:\/\/127\.0\.0\.1:3001/);
   } finally {
     process.env.PATH = originalPath;
     delete process.env.TAILSCALE_LOG;
