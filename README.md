@@ -10,7 +10,7 @@ lizardtail pnpm dev
 Local: http://localhost:5173
 
 lizardtail: detected local server on http://127.0.0.1:5173
-lizardtail: serving via Tailscale: https://my-host.tailabc.ts.net
+lizardtail: serving via Tailscale: https://my-host.tailabc.ts.net:8443
 ```
 
 Use it when your dev server is running on a remote machine and you want to open it from another device on your tailnet without manually copying ports or reconfiguring Tailscale Serve.
@@ -32,6 +32,7 @@ Use it when your dev server is running on a remote machine and you want to open 
 - Stays private to your tailnet by default.
 - Supports `--public` / `--funnel` for intentional public internet sharing through Tailscale Funnel.
 - Cleans up the Tailscale Serve/Funnel mappings it created when the child command exits or you press `Ctrl+C`.
+- Has Nick/Coolify safety guardrails: never touches Tailscale HTTPS 443, never uses bare Serve/Funnel commands, and refuses Coolify internal ports.
 
 ## Requirements
 
@@ -108,7 +109,7 @@ lizardtail -- npm run dev -- --host 0.0.0.0
 | Option | Default | Description |
 | --- | --- | --- |
 | `--port <port>` | auto-detect | Expose this port instead of reading one from command output. |
-| `--host <host>` | `127.0.0.1` | Local host to pass to Tailscale Serve. |
+| `--host <host>` | `127.0.0.1` | Local host to pass to Tailscale Serve/Funnel. |
 | `--timeout <ms>` | `30000` | How long to wait for a port to appear in command output. |
 | `--tailscale-port <port>` | first free `8443+` | Expose the main app on this Tailscale HTTPS port and print it in the MagicDNS URL. Alias: `--https-port`. |
 | `--vite-tailscale-port <port>` | first free `8443+` | Expose a detected Laravel Vite asset server on this Tailscale HTTPS port. Alias: `--vite-https-port`. |
@@ -211,6 +212,19 @@ https://my-host.tailabc.ts.net:8443
 
 Use this only for apps you are comfortable exposing publicly. Stop `lizardtail` with `Ctrl+C` to remove the Funnel mapping it created.
 
+### Nick / Coolify safety
+
+Nick is treated as a production-like Coolify host. On Nick, `lizardtail` prioritizes Coolify availability over dev-server exposure:
+
+- detects Nick by hostname `Nick`/`Coolify` or by a running `coolify-proxy` container;
+- refuses local ports `80`, `443`, `8000`, `6001`, and `6002`;
+- refuses Tailscale HTTPS `443` and any non-high Tailscale HTTPS port;
+- never runs bare `tailscale serve <target>` or bare `tailscale funnel <target>`;
+- never runs `tailscale serve reset`, `tailscale funnel reset`, or `--https=443 off`;
+- runs `ss -tulpn`, checks `coolify-proxy` when Docker is available, and reads `tailscale serve status` before adding a high-port mapping;
+- after serving, verifies the assigned high-port URL and checks that `https://coolify.audiopoesis.com/login` is not returning Cloudflare `521`;
+- prints the exact cleanup command for mappings it created.
+
 ### Longer startup timeout
 
 ```bash
@@ -223,8 +237,9 @@ lizardtail --timeout 60000 pnpm dev
 2. It streams the command output to your terminal.
 3. It scans recent output for a local port.
 4. Once it finds a port, it waits for `127.0.0.1:<port>` or the configured `--host` to accept connections.
-5. It chooses the first free Tailscale HTTPS port from `8443` upward, unless `--tailscale-port` was provided.
-6. It runs Tailscale Serve for private tailnet-only access:
+5. It chooses the first free Tailscale HTTPS port from `8443` upward, unless `--tailscale-port` was provided. Port `443` is always refused.
+6. On Nick, it runs the Coolify safety preflight before changing Tailscale config.
+7. It runs Tailscale Serve for private tailnet-only access:
 
    ```bash
    tailscale serve --bg --https <tailscale-port> http://<host>:<port>
@@ -238,7 +253,7 @@ lizardtail --timeout 60000 pnpm dev
 
    On older Tailscale versions, if that form fails for `127.0.0.1`/`localhost`, it falls back to the same command with just `<port>` as the target.
 
-7. It reads `tailscale status --json`, extracts the current device's MagicDNS name, and prints:
+8. It reads `tailscale status --json`, extracts the current device's MagicDNS name, and prints:
 
    ```text
    https://<device-name>.<tailnet>.ts.net:<tailscale-port>
@@ -301,7 +316,7 @@ Then rerun `lizardtail`. This is a one-time local machine setup step.
 
 ### Browser cannot load assets
 
-Some frameworks, especially full-stack apps with separate backend and Vite dev servers, may need more than one port exposed. `lizardtail` currently exposes the first detected or explicitly supplied port. Run a second `lizardtail --port <port> ...` command or configure Tailscale Serve manually for multi-port setups.
+Some frameworks, especially full-stack apps with separate backend and Vite dev servers, need more than one port exposed. `lizardtail` detects Laravel + Vite and exposes both automatically. For other multi-port setups, run a second `lizardtail --port <port> ...` command or configure Tailscale Serve manually with explicit high ports.
 
 ### Host checks or CORS failures
 

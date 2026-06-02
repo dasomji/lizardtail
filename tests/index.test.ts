@@ -11,6 +11,43 @@ import { DEFAULT_TIMEOUT_MS, detectLaravelViteServers, detectPortFromText, expos
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoRoot, "dist", "index.js");
 
+async function writeNonNickHostCommands(tempDir: string): Promise<void> {
+  await writeFile(path.join(tempDir, "hostname"), "#!/usr/bin/env bash\necho test-host\n", { mode: 0o755 });
+  await writeFile(
+    path.join(tempDir, "docker"),
+    `#!/usr/bin/env bash
+if [ "$1" = "ps" ]; then
+  exit 0
+fi
+exit 1
+`,
+    { mode: 0o755 },
+  );
+}
+
+async function writeNickHostCommands(tempDir: string): Promise<void> {
+  await writeFile(path.join(tempDir, "hostname"), "#!/usr/bin/env bash\necho Nick\n", { mode: 0o755 });
+  await writeFile(
+    path.join(tempDir, "docker"),
+    `#!/usr/bin/env bash
+if [ "$1" = "ps" ]; then
+  echo 'coolify-proxy Up 10 minutes (healthy)'
+  exit 0
+fi
+exit 1
+`,
+    { mode: 0o755 },
+  );
+  await writeFile(
+    path.join(tempDir, "ss"),
+    `#!/usr/bin/env bash
+echo 'tcp LISTEN 0 4096 0.0.0.0:80 0.0.0.0:* users:(("docker-proxy",pid=1,fd=4))'
+echo 'tcp LISTEN 0 4096 0.0.0.0:443 0.0.0.0:* users:(("docker-proxy",pid=2,fd=4))'
+`,
+    { mode: 0o755 },
+  );
+}
+
 test("detectPortFromText finds common dev-server URLs", () => {
   assert.equal(detectPortFromText("Local:   http://localhost:5173/"), 5173);
   assert.equal(detectPortFromText("ready - started server on 0.0.0.0:3000"), 3000);
@@ -109,6 +146,7 @@ test("parseArgs supports public Funnel exposure", () => {
 
 test("exposeWithTailscale can expose on an explicit Tailscale HTTPS port", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "lizardtail-test-"));
+  await writeNonNickHostCommands(tempDir);
   const tailscalePath = path.join(tempDir, "tailscale");
   const tailscaleLog = path.join(tempDir, "tailscale.log");
   const originalPath = process.env.PATH;
@@ -152,6 +190,7 @@ exit 1
 
 test("exposeWithTailscale can expose publicly with Tailscale Funnel", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "lizardtail-test-"));
+  await writeNonNickHostCommands(tempDir);
   const tailscalePath = path.join(tempDir, "tailscale");
   const tailscaleLog = path.join(tempDir, "tailscale.log");
   const originalPath = process.env.PATH;
@@ -197,8 +236,140 @@ exit 1
   }
 });
 
+test("exposeWithTailscale refuses Tailscale HTTPS 443", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "lizardtail-test-"));
+  await writeNonNickHostCommands(tempDir);
+  const tailscalePath = path.join(tempDir, "tailscale");
+  const tailscaleLog = path.join(tempDir, "tailscale.log");
+  const originalPath = process.env.PATH;
+
+  await writeFile(
+    tailscalePath,
+    `#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$TAILSCALE_LOG"
+if [ "$1" = "status" ]; then
+  echo 'ok'
+  exit 0
+fi
+if [ "$1" = "serve" ]; then
+  echo 'serve ok'
+  exit 0
+fi
+exit 1
+`,
+    { mode: 0o755 },
+  );
+
+  try {
+    process.env.PATH = `${tempDir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.TAILSCALE_LOG = tailscaleLog;
+
+    await assert.rejects(exposeWithTailscale("127.0.0.1", 3001, 443), /refusing to use Tailscale HTTPS port 443/);
+
+    const calls = await readFile(tailscaleLog, "utf8");
+    assert.doesNotMatch(calls, /serve --bg/);
+  } finally {
+    process.env.PATH = originalPath;
+    delete process.env.TAILSCALE_LOG;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("exposeWithTailscale refuses forbidden Coolify internal ports on Nick", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "lizardtail-test-"));
+  await writeNickHostCommands(tempDir);
+  const tailscalePath = path.join(tempDir, "tailscale");
+  const tailscaleLog = path.join(tempDir, "tailscale.log");
+  const originalPath = process.env.PATH;
+
+  await writeFile(
+    tailscalePath,
+    `#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$TAILSCALE_LOG"
+if [ "$1" = "status" ]; then
+  echo 'ok'
+  exit 0
+fi
+if [ "$1" = "serve" ] && [ "$2" = "status" ]; then
+  echo 'serve status ok'
+  exit 0
+fi
+if [ "$1" = "serve" ]; then
+  echo 'serve ok'
+  exit 0
+fi
+exit 1
+`,
+    { mode: 0o755 },
+  );
+
+  try {
+    process.env.PATH = `${tempDir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.TAILSCALE_LOG = tailscaleLog;
+
+    await assert.rejects(exposeWithTailscale("127.0.0.1", 8000, 8443), /refusing to expose local port 8000 on Nick/);
+
+    const calls = await readFile(tailscaleLog, "utf8");
+    assert.doesNotMatch(calls, /serve --bg/);
+  } finally {
+    process.env.PATH = originalPath;
+    delete process.env.TAILSCALE_LOG;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("exposeWithTailscale runs Nick preflight before serving high ports", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "lizardtail-test-"));
+  await writeNickHostCommands(tempDir);
+  const tailscalePath = path.join(tempDir, "tailscale");
+  const tailscaleLog = path.join(tempDir, "tailscale.log");
+  const originalPath = process.env.PATH;
+
+  await writeFile(
+    tailscalePath,
+    `#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$TAILSCALE_LOG"
+if [ "$1" = "status" ] && [ "$2" = "--json" ]; then
+  echo '{"Self":{"DNSName":"test-host.tailnet.ts.net."}}'
+  exit 0
+fi
+if [ "$1" = "status" ]; then
+  echo 'ok'
+  exit 0
+fi
+if [ "$1" = "serve" ] && [ "$2" = "status" ]; then
+  echo 'serve status ok'
+  exit 0
+fi
+if [ "$1" = "serve" ]; then
+  echo 'serve ok'
+  exit 0
+fi
+exit 1
+`,
+    { mode: 0o755 },
+  );
+
+  try {
+    process.env.PATH = `${tempDir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.TAILSCALE_LOG = tailscaleLog;
+
+    const url = await exposeWithTailscale("127.0.0.1", 3001, 8443);
+
+    assert.equal(url, "https://test-host.tailnet.ts.net:8443");
+    const calls = await readFile(tailscaleLog, "utf8");
+    assert.match(calls, /serve status/);
+    assert.match(calls, /serve --bg --https 8443 http:\/\/127\.0\.0\.1:3001/);
+  } finally {
+    process.env.PATH = originalPath;
+    delete process.env.TAILSCALE_LOG;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("exposeWithTailscale auto-selects a port when default HTTPS already serves another target", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "lizardtail-test-"));
+  await writeNonNickHostCommands(tempDir);
   const tailscalePath = path.join(tempDir, "tailscale");
   const tailscaleLog = path.join(tempDir, "tailscale.log");
   const originalPath = process.env.PATH;
@@ -246,6 +417,7 @@ exit 1
 
 test("exposeWithTailscale explains how to fix Tailscale Serve permission errors", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "lizardtail-test-"));
+  await writeNonNickHostCommands(tempDir);
   const tailscalePath = path.join(tempDir, "tailscale");
   const tailscaleLog = path.join(tempDir, "tailscale.log");
   const originalPath = process.env.PATH;
@@ -291,6 +463,7 @@ exit 1
 
 test("CLI starts a command, detects its port, and calls tailscale serve", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "lizardtail-test-"));
+  await writeNonNickHostCommands(tempDir);
   const tailscalePath = path.join(tempDir, "tailscale");
   const tailscaleLog = path.join(tempDir, "tailscale.log");
 

@@ -5,6 +5,7 @@ import { once } from "node:events";
 import { existsSync, realpathSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import net from "node:net";
 import path from "node:path";
 import process from "node:process";
@@ -23,6 +24,8 @@ export interface Options {
 
 export const DEFAULT_TIMEOUT_MS = 30_000;
 export const DEFAULT_TAILSCALE_HTTPS_PORT = 8443;
+const MAX_AUTO_TAILSCALE_HTTPS_PORT = 8999;
+const FORBIDDEN_NICK_LOCAL_PORTS = new Set([80, 443, 8000, 6001, 6002]);
 const DETECTION_SETTLE_MS = 1_500;
 
 export function printUsage(): void {
@@ -289,7 +292,7 @@ function errorMessage(error: unknown): string {
 
 function isTailscaleServePermissionError(error: unknown): boolean {
   const message = errorMessage(error).toLowerCase();
-  return message.includes("access denied") && (message.includes("sudo tailscale serve") || message.includes("operator"));
+  return message.includes("access denied") && (message.includes("sudo tailscale serve") || message.includes("sudo tailscale funnel") || message.includes("operator"));
 }
 
 type ExposureMode = "serve" | "funnel";
@@ -303,9 +306,10 @@ function tailscaleUrl(dnsName: string, tailscalePort?: number): string {
 }
 
 function tailscaleServePermissionHelp(target: string, tailscalePort: number, mode: ExposureMode): string {
-  return `Tailscale refused to update Serve config without elevated privileges.
+  const label = mode === "funnel" ? "Funnel" : "Serve";
+  return `Tailscale refused to update ${label} config without elevated privileges.
 
-Run this once to let your user manage Tailscale Serve:
+Run this once to let your user manage Tailscale ${label}:
 
   sudo tailscale set --operator=$USER
 
@@ -345,7 +349,12 @@ async function exec(command: string, args: string[], opts: { input?: string; env
     child.stdin.end(opts.input);
   }
 
-  const [code, signal] = (await once(child, "exit")) as [number | null, NodeJS.Signals | null];
+  const [code, signal] = (await Promise.race([
+    once(child, "exit") as Promise<[number | null, NodeJS.Signals | null]>,
+    once(child, "error").then(([error]) => {
+      throw error;
+    }) as Promise<[number | null, NodeJS.Signals | null]>,
+  ])) as [number | null, NodeJS.Signals | null];
   if (code !== 0) {
     const reason = signal ? `signal ${signal}` : `exit code ${code}`;
     throw new Error(`${command} ${args.join(" ")} failed with ${reason}\n${stderr || stdout}`.trim());
@@ -383,16 +392,30 @@ async function getTailscaleDnsName(): Promise<string | undefined> {
   return status.Self?.DNSName?.replace(/\.$/, "");
 }
 
-interface TailscaleServeStatus {
+interface TailscaleExposureStatus {
   Web?: Record<string, { Handlers?: Record<string, { Proxy?: string }> }>;
 }
 
-async function getTailscaleServeStatus(): Promise<TailscaleServeStatus | undefined> {
+async function getTailscaleExposureStatus(mode: ExposureMode): Promise<TailscaleExposureStatus | undefined> {
   try {
-    const { stdout } = await exec("tailscale", ["serve", "status", "--json"]);
-    return JSON.parse(stdout) as TailscaleServeStatus;
+    const { stdout } = await exec("tailscale", [mode, "status", "--json"]);
+    return JSON.parse(stdout) as TailscaleExposureStatus;
   } catch {
     return undefined;
+  }
+}
+
+async function getTailscaleServeStatus(): Promise<TailscaleExposureStatus | undefined> {
+  return getTailscaleExposureStatus("serve");
+}
+
+function collectTailscaleStatusPorts(status: TailscaleExposureStatus | undefined, usedPorts: Set<number>): void {
+  if (!status?.Web) return;
+
+  for (const key of Object.keys(status.Web)) {
+    const match = key.match(/:(\d{2,5})$/);
+    const port = match?.[1] ? validDetectedPort(match[1]) : undefined;
+    if (port) usedPorts.add(port);
   }
 }
 
@@ -412,26 +435,30 @@ function normalizeProxyTarget(target: string): string {
 }
 
 async function resolveTailscaleHttpsPort(_target: string, requestedPort?: number): Promise<number> {
-  return requestedPort ?? chooseTailscaleHttpsPort();
+  if (requestedPort !== undefined) return requestedPort;
+  return chooseTailscaleHttpsPort();
 }
 
 async function chooseTailscaleHttpsPort(excludedPort?: number): Promise<number> {
   const usedPorts = new Set<number>();
-  const status = await getTailscaleServeStatus();
+  collectTailscaleStatusPorts(await getTailscaleExposureStatus("serve"), usedPorts);
+  collectTailscaleStatusPorts(await getTailscaleExposureStatus("funnel"), usedPorts);
 
-  if (status?.Web) {
-    for (const key of Object.keys(status.Web)) {
-      const match = key.match(/:(\d{2,5})$/);
-      const port = match?.[1] ? validDetectedPort(match[1]) : undefined;
-      if (port) usedPorts.add(port);
-    }
-  }
-
-  for (let port = DEFAULT_TAILSCALE_HTTPS_PORT; port <= 8999; port += 1) {
+  for (let port = DEFAULT_TAILSCALE_HTTPS_PORT; port <= MAX_AUTO_TAILSCALE_HTTPS_PORT; port += 1) {
     if (port !== excludedPort && !usedPorts.has(port)) return port;
   }
 
   throw new Error("could not find an available Tailscale HTTPS port");
+}
+
+function assertSafeTailscaleHttpsPort(port: number): void {
+  if (port === 443) {
+    throw new Error("refusing to use Tailscale HTTPS port 443; Lizard Tail only uses explicit high ports so it cannot interfere with Coolify/Traefik");
+  }
+
+  if (port < DEFAULT_TAILSCALE_HTTPS_PORT) {
+    throw new Error(`refusing to use Tailscale HTTPS port ${port}; choose an explicit high port (${DEFAULT_TAILSCALE_HTTPS_PORT}+)`);
+  }
 }
 
 async function writeLaravelHotFile(viteUrl: string): Promise<string | undefined> {
@@ -513,6 +540,119 @@ function corsHeaders(): Record<string, string> {
   };
 }
 
+interface NickPreflight {
+  isNick: boolean;
+  reason?: string;
+}
+
+async function detectNickHost(): Promise<NickPreflight> {
+  const hostname = await exec("hostname", []).then(({ stdout }) => stdout.trim()).catch(() => "");
+  if (/^(coolify|nick)$/i.test(hostname)) return { isNick: true, reason: `hostname is ${hostname}` };
+
+  const dockerProxy = await getCoolifyProxyStatus().catch(() => undefined);
+  if (dockerProxy?.running) return { isNick: true, reason: "coolify-proxy container is present" };
+
+  return { isNick: false };
+}
+
+async function getCoolifyProxyStatus(): Promise<{ available: boolean; running: boolean; output: string }> {
+  try {
+    const { stdout } = await exec("docker", ["ps", "--filter", "name=coolify-proxy", "--format", "{{.Names}} {{.Status}}"]);
+    const output = stdout.trim();
+    return { available: true, running: /coolify-proxy/i.test(output) && /\b(up|running|healthy)\b/i.test(output), output };
+  } catch (error) {
+    const message = errorMessage(error).toLowerCase();
+    if (message.includes("no such file") || message.includes("not found") || message.includes("executable file not found")) {
+      return { available: false, running: false, output: "" };
+    }
+    throw error;
+  }
+}
+
+async function runNickPreflight(localPort: number, tailscalePort: number, mode: ExposureMode): Promise<void> {
+  const nick = await detectNickHost();
+  if (!nick.isNick) return;
+
+  if (FORBIDDEN_NICK_LOCAL_PORTS.has(localPort)) {
+    throw new Error(`refusing to expose local port ${localPort} on Nick; Coolify safety forbids ports 80, 443, 8000, 6001, and 6002`);
+  }
+
+  assertSafeTailscaleHttpsPort(tailscalePort);
+
+  const dockerProxy = await getCoolifyProxyStatus();
+  if (dockerProxy.available && !dockerProxy.running) {
+    throw new Error("refusing to expose on Nick because docker is available but coolify-proxy is not running/healthy");
+  }
+
+  const { stdout: sockets } = await exec("ss", ["-tulpn"]);
+  assertCoolifyRootPortsSafe(sockets, dockerProxy.running);
+
+  await exec("tailscale", ["serve", "status"]);
+
+  console.error(`lizardtail: Nick safety preflight passed (${nick.reason}); using explicit Tailscale ${mode === "funnel" ? "Funnel" : "Serve"} HTTPS port ${tailscalePort}`);
+}
+
+function assertCoolifyRootPortsSafe(socketOutput: string, coolifyProxyRunning: boolean): void {
+  const unsafeLines = socketOutput
+    .split(/\r?\n/)
+    .filter((line) => socketLineUsesPort(line, 80) || socketLineUsesPort(line, 443))
+    .filter((line) => {
+      if (/\b(coolify|traefik|docker-proxy)\b/i.test(line)) return false;
+      if (coolifyProxyRunning && !/users:\(/i.test(line)) return false;
+      return true;
+    });
+
+  if (unsafeLines.length > 0) {
+    throw new Error(`refusing to expose on Nick because ports 80/443 are not clearly owned by Coolify/Traefik:\n${unsafeLines.join("\n")}`);
+  }
+}
+
+function socketLineUsesPort(line: string, port: number): boolean {
+  return new RegExp(`(?:^|[\\s:])(?:\\*|0\\.0\\.0\\.0|127\\.0\\.0\\.1|\\[::\\]|::|\\S+):${port}(?:\\s|$)`).test(line);
+}
+
+async function runNickPostflight(exposures: TailscaleExposure[]): Promise<void> {
+  const nick = await detectNickHost();
+  if (!nick.isNick) return;
+
+  for (const exposure of exposures) {
+    assertSafeTailscaleHttpsPort(exposure.httpsPort);
+    const result = await checkHttpsUrl(exposure.url);
+    if (!result.ok) {
+      throw new Error(`Nick postflight failed: ${exposure.url} was not reachable on HTTPS port ${exposure.httpsPort}: ${result.message}`);
+    }
+  }
+
+  const coolify = await checkHttpsUrl("https://coolify.audiopoesis.com/login");
+  if (coolify.statusCode === 521) {
+    throw new Error("Nick postflight failed: https://coolify.audiopoesis.com/login returned Cloudflare 521");
+  }
+
+  console.error(`lizardtail: Nick postflight passed; Coolify login returned ${coolify.statusCode ?? "no HTTP status but not 521"}`);
+  for (const exposure of exposures) {
+    console.error(`lizardtail: cleanup command: tailscale ${exposure.mode} --https=${exposure.httpsPort} off`);
+  }
+}
+
+async function checkHttpsUrl(url: string): Promise<{ ok: boolean; statusCode?: number; message: string }> {
+  return new Promise((resolve) => {
+    const request = httpsRequest(url, { method: "GET", rejectUnauthorized: false, timeout: 5_000 }, (response) => {
+      response.resume();
+      response.on("end", () => {
+        const statusCode = response.statusCode;
+        resolve({ ok: statusCode !== undefined && statusCode >= 200 && statusCode < 500, statusCode, message: `HTTP ${statusCode ?? "unknown"}` });
+      });
+    });
+
+    request.on("timeout", () => {
+      request.destroy();
+      resolve({ ok: false, message: "timeout" });
+    });
+    request.on("error", (error) => resolve({ ok: false, message: error.message }));
+    request.end();
+  });
+}
+
 interface TailscaleExposure {
   url: string;
   httpsPort: number;
@@ -524,7 +664,9 @@ async function exposeWithTailscaleDetailed(host: string, port: number, tailscale
 
   const target = `http://${host}:${port}`;
   const resolvedTailscalePort = await resolveTailscaleHttpsPort(target, tailscalePort);
+  assertSafeTailscaleHttpsPort(resolvedTailscalePort);
   const mode: ExposureMode = publicExposure ? "funnel" : "serve";
+  await runNickPreflight(port, resolvedTailscalePort, mode);
 
   try {
     await exec("tailscale", tailscaleExposeCommand(target, resolvedTailscalePort, mode));
@@ -562,6 +704,7 @@ export async function exposeWithTailscale(host: string, port: number, tailscaleP
 }
 
 async function removeTailscaleExposurePort(port: number, mode: ExposureMode): Promise<void> {
+  assertSafeTailscaleHttpsPort(port);
   await exec("tailscale", [mode, `--https=${port}`, "off"]);
 }
 
@@ -613,7 +756,9 @@ export async function main(): Promise<void> {
       if (options.openCheck) await waitForOpenPort(options.host, port, 10_000);
       const exposure = await exposeWithTailscaleDetailed(options.host, port, options.tailscalePort, options.public);
       createdTailscalePorts.set(exposure.httpsPort, exposure.mode);
-      console.error(`lizardtail: serving via Tailscale: ${exposure.url}\n`);
+      console.error(`lizardtail: serving via Tailscale: ${exposure.url}`);
+      await runNickPostflight([exposure]);
+      console.error("");
     })().catch((error: unknown) => {
       console.error(`lizardtail: failed to expose server: ${errorMessage(error)}`);
       stopChild();
@@ -647,6 +792,7 @@ export async function main(): Promise<void> {
       console.error(`lizardtail: serving Vite assets via Tailscale: ${viteExposure.url}`);
       console.error(`lizardtail: proxying Vite through local CORS proxy: http://${viteProxy.host}:${viteProxy.port} -> ${viteLocalUrl}`);
       if (hotPath) console.error(`lizardtail: wrote Laravel Vite hot file: ${hotPath}`);
+      await runNickPostflight([appExposure, viteExposure]);
       console.error("");
     })().catch((error: unknown) => {
       console.error(`lizardtail: failed to expose Laravel/Vite servers: ${errorMessage(error)}`);
