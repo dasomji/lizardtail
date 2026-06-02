@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
-import { DEFAULT_TIMEOUT_MS, detectPortFromText, exposeWithTailscale, parseArgs, stripAnsi } from "../src/index.ts";
+import { DEFAULT_TIMEOUT_MS, detectLaravelViteServers, detectPortFromText, exposeWithTailscale, parseArgs, stripAnsi } from "../src/index.ts";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoRoot, "dist", "index.js");
@@ -42,6 +42,18 @@ test("detectPortFromText prefers Laravel app server output over Vite output", ()
   assert.equal(detectPortFromText(output), 8001);
 });
 
+test("detectLaravelViteServers finds both Laravel and Vite ports", () => {
+  const output = `[vite]   VITE v8.0.13  ready in 299 ms
+[vite]   ➜  Local:   http://localhost:5174/
+[server]    INFO  Server running on [http://127.0.0.1:8001].`;
+
+  assert.deepEqual(detectLaravelViteServers(output), {
+    appPort: 8001,
+    vitePort: 5174,
+    viteHost: "localhost",
+  });
+});
+
 test("parseArgs parses options before the command", () => {
   assert.deepEqual(parseArgs(["--host", "localhost", "--port", "3000", "--timeout=5000", "--no-open-check", "pnpm", "dev"]), {
     command: ["pnpm", "dev"],
@@ -70,11 +82,12 @@ test("parseArgs uses documented defaults", () => {
   });
 });
 
-test("parseArgs supports an explicit Tailscale HTTPS port", () => {
-  assert.deepEqual(parseArgs(["--tailscale-port", "8450", "pnpm", "dev"]), {
+test("parseArgs supports explicit Tailscale HTTPS ports", () => {
+  assert.deepEqual(parseArgs(["--tailscale-port", "8450", "--vite-tailscale-port", "8453", "pnpm", "dev"]), {
     command: ["pnpm", "dev"],
     host: "127.0.0.1",
     tailscalePort: 8450,
+    viteTailscalePort: 8453,
     timeoutMs: DEFAULT_TIMEOUT_MS,
     openCheck: true,
   });

@@ -2,8 +2,10 @@
 
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import net from "node:net";
+import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
@@ -12,6 +14,7 @@ export interface Options {
   host: string;
   port?: number;
   tailscalePort?: number;
+  viteTailscalePort?: number;
   timeoutMs: number;
   openCheck: boolean;
 }
@@ -28,7 +31,9 @@ Options:
   --host <host>        Local host to expose. Default: 127.0.0.1
   --timeout <ms>       Port-detection timeout. Default: ${DEFAULT_TIMEOUT_MS}
   --tailscale-port <port>
-                       Expose on this Tailscale HTTPS port instead of 443.
+                       Expose the main app on this Tailscale HTTPS port instead of 443.
+  --vite-tailscale-port <port>
+                       Expose a detected Laravel Vite server on this Tailscale HTTPS port.
   --no-open-check      Skip waiting for the local port to accept connections.
   -h, --help           Show this help.
 
@@ -108,6 +113,23 @@ export function parseArgs(argv: string[]): Options {
 
     if (arg.startsWith("--https-port=")) {
       options.tailscalePort = parsePort(arg.slice("--https-port=".length));
+      continue;
+    }
+
+    if (arg === "--vite-tailscale-port" || arg === "--vite-https-port") {
+      const value = argv[++i];
+      if (!value) usage();
+      options.viteTailscalePort = parsePort(value);
+      continue;
+    }
+
+    if (arg.startsWith("--vite-tailscale-port=")) {
+      options.viteTailscalePort = parsePort(arg.slice("--vite-tailscale-port=".length));
+      continue;
+    }
+
+    if (arg.startsWith("--vite-https-port=")) {
+      options.viteTailscalePort = parsePort(arg.slice("--vite-https-port=".length));
       continue;
     }
 
@@ -222,6 +244,34 @@ function validDetectedPort(value: string): number | undefined {
   return Number.isInteger(port) && port > 0 && port <= 65_535 ? port : undefined;
 }
 
+interface LaravelViteDetection {
+  appPort?: number;
+  vitePort?: number;
+  viteHost?: string;
+}
+
+export function detectLaravelViteServers(text: string): LaravelViteDetection {
+  const clean = stripAnsi(text);
+  const detection: LaravelViteDetection = {};
+
+  const appMatch = clean.match(/\[server\][^\n\r]*Server running on \[http:\/\/(?:127\.0\.0\.1|localhost|0\.0\.0\.0|\[::1\]|::1):(\d{1,5})\]/i);
+  const appPort = appMatch?.[1] ? validDetectedPort(appMatch[1]) : undefined;
+  if (appPort) detection.appPort = appPort;
+
+  const viteMatch = [...clean.matchAll(/\[vite\][^\n\r]*(?:Local:)\s*http:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|::1):(\d{1,5})\/?/gi)].at(-1);
+  const vitePort = viteMatch?.[2] ? validDetectedPort(viteMatch[2]) : undefined;
+  if (vitePort) {
+    detection.vitePort = vitePort;
+    detection.viteHost = normalizeLocalHost(viteMatch?.[1] ?? "localhost");
+  }
+
+  return detection;
+}
+
+function normalizeLocalHost(host: string): string {
+  return host === "[::1]" || host === "::1" ? "localhost" : host;
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -256,10 +306,12 @@ Or expose this server manually with:
   sudo tailscale ${tailscaleServeCommand(target, tailscalePort).join(" ")}`;
 }
 
-async function exec(command: string, args: string[], opts: { input?: string } = {}): Promise<{ stdout: string; stderr: string }> {
+async function exec(command: string, args: string[], opts: { input?: string; env?: NodeJS.ProcessEnv } = {}): Promise<{ stdout: string; stderr: string }> {
+  const childEnv = opts.env ?? process.env;
+  
   const child = spawn(command, args, {
     stdio: [opts.input ? "pipe" : "ignore", "pipe", "pipe"],
-    env: process.env,
+    env: childEnv,
   });
 
   let stdout = "";
@@ -315,6 +367,41 @@ export async function waitForOpenPort(host: string, port: number, timeoutMs: num
   throw new Error(`timed out waiting for ${host}:${port} to accept connections`);
 }
 
+async function getTailscaleDnsName(): Promise<string | undefined> {
+  const { stdout } = await exec("tailscale", ["status", "--json"]);
+  const status = JSON.parse(stdout) as { Self?: { DNSName?: string } };
+  return status.Self?.DNSName?.replace(/\.$/, "");
+}
+
+async function chooseTailscaleHttpsPort(excludedPort?: number): Promise<number> {
+  const usedPorts = new Set<number>();
+
+  try {
+    const { stdout } = await exec("tailscale", ["serve", "status"]);
+    for (const match of stdout.matchAll(/https:\/\/[^\s:]+:(\d{2,5})/g)) {
+      const port = validDetectedPort(match[1]);
+      if (port) usedPorts.add(port);
+    }
+  } catch {
+    // `tailscale serve status` is advisory. If it fails, still choose a reasonable default.
+  }
+
+  for (let port = 8443; port <= 8999; port += 1) {
+    if (port !== excludedPort && !usedPorts.has(port)) return port;
+  }
+
+  throw new Error("could not find an available Tailscale HTTPS port for the Vite server");
+}
+
+async function writeLaravelHotFile(viteUrl: string): Promise<string | undefined> {
+  const publicDir = path.join(process.cwd(), "public");
+  if (!existsSync(publicDir)) return undefined;
+
+  const hotPath = path.join(publicDir, "hot");
+  await writeFile(hotPath, viteUrl);
+  return hotPath;
+}
+
 export async function exposeWithTailscale(host: string, port: number, tailscalePort?: number): Promise<string> {
   await exec("tailscale", ["status"]);
 
@@ -353,10 +440,18 @@ export async function exposeWithTailscale(host: string, port: number, tailscaleP
 export async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
   const [command, ...args] = options.command;
+  const tailscaleDnsName = await getTailscaleDnsName().catch(() => undefined);
+  const childEnv: NodeJS.ProcessEnv = { ...process.env, FORCE_COLOR: process.env.FORCE_COLOR ?? "1" };
+
+  if (tailscaleDnsName) {
+    childEnv.__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS = childEnv.__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS
+      ? `${childEnv.__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS},${tailscaleDnsName}`
+      : tailscaleDnsName;
+  }
 
   const child = spawn(command, args, {
     stdio: ["inherit", "pipe", "pipe"],
-    env: { ...process.env, FORCE_COLOR: process.env.FORCE_COLOR ?? "1" },
+    env: childEnv,
   });
 
   let exposed = false;
@@ -384,6 +479,36 @@ export async function main(): Promise<void> {
     });
   };
 
+  const exposeLaravelVite = (appPort: number, vitePort: number, viteHost: string) => {
+    if (exposed || exposing) return;
+    exposed = true;
+    exposing = (async () => {
+      const appLocalUrl = `http://${options.host}:${appPort}`;
+      const viteLocalUrl = `http://${viteHost}:${vitePort}`;
+      console.error(`\nlizardtail: detected Laravel app server on ${appLocalUrl}`);
+      console.error(`lizardtail: detected Vite asset server on ${viteLocalUrl}`);
+
+      if (options.openCheck) {
+        await waitForOpenPort(options.host, appPort, 10_000);
+        await waitForOpenPort(viteHost, vitePort, 10_000);
+      }
+
+      const appUrl = await exposeWithTailscale(options.host, appPort, options.tailscalePort);
+      const viteTailscalePort = options.viteTailscalePort ?? (await chooseTailscaleHttpsPort(options.tailscalePort));
+      const viteUrl = await exposeWithTailscale(viteHost, vitePort, viteTailscalePort);
+      const hotPath = await writeLaravelHotFile(viteUrl);
+
+      console.error(`lizardtail: serving Laravel via Tailscale: ${appUrl}`);
+      console.error(`lizardtail: serving Vite assets via Tailscale: ${viteUrl}`);
+      if (hotPath) console.error(`lizardtail: wrote Laravel Vite hot file: ${hotPath}`);
+      console.error("");
+    })().catch((error: unknown) => {
+      console.error(`lizardtail: failed to expose Laravel/Vite servers: ${errorMessage(error)}`);
+      stopChild();
+      process.exitCode = 1;
+    });
+  };
+
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
 
@@ -395,6 +520,12 @@ export async function main(): Promise<void> {
     if (detectionTimer) clearTimeout(detectionTimer);
     detectionTimer = setTimeout(() => {
       detectionTimer = undefined;
+      const laravelVite = detectLaravelViteServers(recentOutput);
+      if (laravelVite.appPort && laravelVite.vitePort) {
+        exposeLaravelVite(laravelVite.appPort, laravelVite.vitePort, laravelVite.viteHost ?? "localhost");
+        return;
+      }
+
       const settledPort = detectPortFromText(recentOutput);
       if (settledPort) expose(settledPort);
     }, DETECTION_SETTLE_MS);

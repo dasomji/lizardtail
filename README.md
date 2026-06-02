@@ -27,6 +27,7 @@ Use it when your dev server is running on a remote machine and you want to open 
 - Prints the HTTPS MagicDNS URL for the current Tailscale device.
 - Supports an explicit `--port` when automatic detection is not possible.
 - Supports `--tailscale-port` when you want the MagicDNS URL to include a specific HTTPS port.
+- Detects Laravel + Vite dev output, exposes both servers, and rewrites Laravel's `public/hot` file to the Tailscale Vite URL.
 
 ## Requirements
 
@@ -102,7 +103,8 @@ lizardtail -- npm run dev -- --host 0.0.0.0
 | `--port <port>` | auto-detect | Expose this port instead of reading one from command output. |
 | `--host <host>` | `127.0.0.1` | Local host to pass to Tailscale Serve. |
 | `--timeout <ms>` | `30000` | How long to wait for a port to appear in command output. |
-| `--tailscale-port <port>` | `443` | Expose on this Tailscale HTTPS port and print it in the MagicDNS URL. Alias: `--https-port`. |
+| `--tailscale-port <port>` | `443` | Expose the main app on this Tailscale HTTPS port and print it in the MagicDNS URL. Alias: `--https-port`. |
+| `--vite-tailscale-port <port>` | first free `8443+` | Expose a detected Laravel Vite asset server on this Tailscale HTTPS port. Alias: `--vite-https-port`. |
 | `--no-open-check` | enabled | Skip waiting for the local port to accept connections before calling Tailscale. |
 | `-h`, `--help` | | Show help. |
 
@@ -154,19 +156,29 @@ https://my-host.tailabc.ts.net:8450
 
 ### Laravel / `composer run dev`
 
-Laravel development commands often start both the PHP app server and the Vite asset server. `lizardtail` prefers output from the app server when it can see both ports:
+Laravel development commands often start both the PHP app server and the Vite asset server. When `lizardtail` sees both, it:
+
+1. exposes the Laravel app server;
+2. exposes the Vite asset server on a separate Tailscale HTTPS port;
+3. writes `public/hot` to the Tailscale Vite URL so Laravel renders assets from the reachable Vite server.
 
 ```bash
 lizardtail composer run dev
 ```
 
-If your app server lands on a known port, you can force it:
+You can choose the Vite Tailscale port explicitly:
+
+```bash
+lizardtail --vite-tailscale-port 8453 composer run dev
+```
+
+`lizardtail` also sets `__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS` for the child command when it can read your Tailscale MagicDNS name. If browser assets still fail, your Vite config may also need CORS enabled, for example by running Vite with `--cors`.
+
+If your app server lands on a known port and you only want to expose that server, you can force it:
 
 ```bash
 lizardtail --port 8001 composer run dev
 ```
-
-If browser assets fail to load, the Vite server may also need to be exposed or your Laravel/Vite config may need to allow the Tailscale hostname.
 
 ### Longer startup timeout
 
