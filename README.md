@@ -27,7 +27,8 @@ Use it when your dev server is running on a remote machine and you want to open 
 - Prints the HTTPS MagicDNS URL for the current Tailscale device.
 - Supports an explicit `--port` when automatic detection is not possible.
 - Supports `--tailscale-port` when you want the MagicDNS URL to include a specific HTTPS port.
-- Detects Laravel + Vite dev output, exposes both servers, and rewrites Laravel's `public/hot` file to the Tailscale Vite URL.
+- Detects Laravel + Vite dev output, exposes both servers, rewrites Laravel's `public/hot` file to the Tailscale Vite URL, and proxies Vite assets with CORS headers so module scripts can load cross-origin.
+- Avoids overwriting an existing default Tailscale Serve mapping: if `https://<host>` is already serving another project, `lizardtail` chooses the first free `8443+` HTTPS port and prints that URL.
 
 ## Requirements
 
@@ -136,13 +137,13 @@ lizardtail --port 3000 npm run dev
 
 ### MagicDNS URL with an explicit port
 
-By default, Tailscale Serve uses HTTPS port 443, so the URL has no port:
+By default, Tailscale Serve uses HTTPS port 443, so the URL has no port when 443 is free or already points at the same local target:
 
 ```text
 https://my-host.tailabc.ts.net
 ```
 
-If you want a URL with a port, choose the Tailscale HTTPS port separately:
+If port 443 is already serving another project, `lizardtail` automatically chooses the first free `8443+` port so multiple projects can be served at the same time. You can also choose the Tailscale HTTPS port explicitly:
 
 ```bash
 lizardtail --tailscale-port 8450 pnpm dev
@@ -159,8 +160,9 @@ https://my-host.tailabc.ts.net:8450
 Laravel development commands often start both the PHP app server and the Vite asset server. When `lizardtail` sees both, it:
 
 1. exposes the Laravel app server;
-2. exposes the Vite asset server on a separate Tailscale HTTPS port;
-3. writes `public/hot` to the Tailscale Vite URL so Laravel renders assets from the reachable Vite server.
+2. starts a small local proxy in front of Vite that adds CORS headers;
+3. exposes that Vite proxy on a separate Tailscale HTTPS port;
+4. writes `public/hot` to the Tailscale Vite URL so Laravel renders assets from the reachable Vite server.
 
 ```bash
 lizardtail composer run dev
@@ -172,7 +174,7 @@ You can choose the Vite Tailscale port explicitly:
 lizardtail --vite-tailscale-port 8453 composer run dev
 ```
 
-`lizardtail` also sets `__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS` for the child command when it can read your Tailscale MagicDNS name. If browser assets still fail, your Vite config may also need CORS enabled, for example by running Vite with `--cors`.
+`lizardtail` also sets `__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS` for the child command when it can read your Tailscale MagicDNS name. The local proxy handles CORS for module scripts loaded from the Vite Tailscale URL.
 
 If your app server lands on a known port and you only want to expose that server, you can force it:
 

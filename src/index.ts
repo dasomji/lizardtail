@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, realpathSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
+import { createServer, request as httpRequest } from "node:http";
 import net from "node:net";
 import path from "node:path";
 import process from "node:process";
@@ -373,24 +374,60 @@ async function getTailscaleDnsName(): Promise<string | undefined> {
   return status.Self?.DNSName?.replace(/\.$/, "");
 }
 
+interface TailscaleServeStatus {
+  Web?: Record<string, { Handlers?: Record<string, { Proxy?: string }> }>;
+}
+
+async function getTailscaleServeStatus(): Promise<TailscaleServeStatus | undefined> {
+  try {
+    const { stdout } = await exec("tailscale", ["serve", "status", "--json"]);
+    return JSON.parse(stdout) as TailscaleServeStatus;
+  } catch {
+    return undefined;
+  }
+}
+
+async function getTailscaleServeProxy(port: number): Promise<string | undefined> {
+  const status = await getTailscaleServeStatus();
+  if (!status?.Web) return undefined;
+
+  const suffix = `:${port}`;
+  const webKey = Object.keys(status.Web).find((key) => key.endsWith(suffix));
+  if (!webKey) return undefined;
+
+  return status.Web[webKey]?.Handlers?.["/"]?.Proxy;
+}
+
+function normalizeProxyTarget(target: string): string {
+  return target.replace("http://localhost:", "http://127.0.0.1:").replace(/\/$/, "");
+}
+
+async function resolveTailscaleHttpsPort(target: string, requestedPort?: number): Promise<number | undefined> {
+  if (requestedPort !== undefined) return requestedPort;
+
+  const defaultProxy = await getTailscaleServeProxy(443);
+  if (!defaultProxy || normalizeProxyTarget(defaultProxy) === normalizeProxyTarget(target)) return undefined;
+
+  return chooseTailscaleHttpsPort();
+}
+
 async function chooseTailscaleHttpsPort(excludedPort?: number): Promise<number> {
   const usedPorts = new Set<number>();
+  const status = await getTailscaleServeStatus();
 
-  try {
-    const { stdout } = await exec("tailscale", ["serve", "status"]);
-    for (const match of stdout.matchAll(/https:\/\/[^\s:]+:(\d{2,5})/g)) {
-      const port = validDetectedPort(match[1]);
+  if (status?.Web) {
+    for (const key of Object.keys(status.Web)) {
+      const match = key.match(/:(\d{2,5})$/);
+      const port = match?.[1] ? validDetectedPort(match[1]) : undefined;
       if (port) usedPorts.add(port);
     }
-  } catch {
-    // `tailscale serve status` is advisory. If it fails, still choose a reasonable default.
   }
 
   for (let port = 8443; port <= 8999; port += 1) {
     if (port !== excludedPort && !usedPorts.has(port)) return port;
   }
 
-  throw new Error("could not find an available Tailscale HTTPS port for the Vite server");
+  throw new Error("could not find an available Tailscale HTTPS port");
 }
 
 async function writeLaravelHotFile(viteUrl: string): Promise<string | undefined> {
@@ -402,24 +439,96 @@ async function writeLaravelHotFile(viteUrl: string): Promise<string | undefined>
   return hotPath;
 }
 
+async function startCorsProxy(targetHost: string, targetPort: number): Promise<{ host: string; port: number }> {
+  const server = createServer((incoming, response) => {
+    if (incoming.method === "OPTIONS") {
+      response.writeHead(204, corsHeaders());
+      response.end();
+      return;
+    }
+
+    const upstream = httpRequest(
+      {
+        host: targetHost,
+        port: targetPort,
+        method: incoming.method,
+        path: incoming.url,
+        headers: { ...incoming.headers, host: `${targetHost}:${targetPort}` },
+      },
+      (upstreamResponse) => {
+        response.writeHead(upstreamResponse.statusCode ?? 502, {
+          ...upstreamResponse.headers,
+          ...corsHeaders(),
+        });
+        upstreamResponse.pipe(response);
+      },
+    );
+
+    upstream.on("error", (error) => {
+      response.writeHead(502, corsHeaders());
+      response.end(`lizardtail Vite proxy error: ${error.message}`);
+    });
+
+    incoming.pipe(upstream);
+  });
+
+  server.on("upgrade", (request, socket, head) => {
+    const upstream = net.connect(targetPort, targetHost, () => {
+      upstream.write(`${request.method ?? "GET"} ${request.url ?? "/"} HTTP/${request.httpVersion}\r\n`);
+      for (const [name, value] of Object.entries(request.headers)) {
+        if (value === undefined) continue;
+        upstream.write(`${name}: ${Array.isArray(value) ? value.join(",") : value}\r\n`);
+      }
+      upstream.write(`\r\n`);
+      if (head.length > 0) upstream.write(head);
+      socket.pipe(upstream).pipe(socket);
+    });
+
+    upstream.on("error", () => socket.destroy());
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("failed to start Vite CORS proxy");
+
+  return { host: "127.0.0.1", port: address.port };
+}
+
+function corsHeaders(): Record<string, string> {
+  return {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS",
+    "Access-Control-Allow-Headers": "*",
+  };
+}
+
 export async function exposeWithTailscale(host: string, port: number, tailscalePort?: number): Promise<string> {
   await exec("tailscale", ["status"]);
 
   const target = `http://${host}:${port}`;
+  const resolvedTailscalePort = await resolveTailscaleHttpsPort(target, tailscalePort);
+
   try {
-    await exec("tailscale", tailscaleServeCommand(target, tailscalePort));
+    await exec("tailscale", tailscaleServeCommand(target, resolvedTailscalePort));
   } catch (firstError) {
     if (isTailscaleServePermissionError(firstError)) {
-      throw new Error(tailscaleServePermissionHelp(target, tailscalePort));
+      throw new Error(tailscaleServePermissionHelp(target, resolvedTailscalePort));
     }
 
     if (host !== "127.0.0.1" && host !== "localhost") throw firstError;
 
     try {
-      await exec("tailscale", tailscaleServeCommand(String(port), tailscalePort));
+      await exec("tailscale", tailscaleServeCommand(String(port), resolvedTailscalePort));
     } catch (fallbackError) {
       if (isTailscaleServePermissionError(fallbackError)) {
-        throw new Error(tailscaleServePermissionHelp(target, tailscalePort));
+        throw new Error(tailscaleServePermissionHelp(target, resolvedTailscalePort));
       }
       throw fallbackError;
     }
@@ -429,10 +538,10 @@ export async function exposeWithTailscale(host: string, port: number, tailscaleP
   const status = JSON.parse(stdout) as { Self?: { DNSName?: string; TailscaleIPs?: string[] } };
   const dnsName = status.Self?.DNSName?.replace(/\.$/, "");
 
-  if (dnsName) return tailscaleUrl(dnsName, tailscalePort);
+  if (dnsName) return tailscaleUrl(dnsName, resolvedTailscalePort);
 
   const ip = status.Self?.TailscaleIPs?.find((value) => /^\d+\.\d+\.\d+\.\d+$/.test(value));
-  if (ip) return tailscaleUrl(ip, tailscalePort);
+  if (ip) return tailscaleUrl(ip, resolvedTailscalePort);
 
   throw new Error("could not determine this device's Tailscale DNS name or IP");
 }
@@ -494,12 +603,14 @@ export async function main(): Promise<void> {
       }
 
       const appUrl = await exposeWithTailscale(options.host, appPort, options.tailscalePort);
+      const viteProxy = await startCorsProxy(viteHost, vitePort);
       const viteTailscalePort = options.viteTailscalePort ?? (await chooseTailscaleHttpsPort(options.tailscalePort));
-      const viteUrl = await exposeWithTailscale(viteHost, vitePort, viteTailscalePort);
+      const viteUrl = await exposeWithTailscale(viteProxy.host, viteProxy.port, viteTailscalePort);
       const hotPath = await writeLaravelHotFile(viteUrl);
 
       console.error(`lizardtail: serving Laravel via Tailscale: ${appUrl}`);
       console.error(`lizardtail: serving Vite assets via Tailscale: ${viteUrl}`);
+      console.error(`lizardtail: proxying Vite through local CORS proxy: http://${viteProxy.host}:${viteProxy.port} -> ${viteLocalUrl}`);
       if (hotPath) console.error(`lizardtail: wrote Laravel Vite hot file: ${hotPath}`);
       console.error("");
     })().catch((error: unknown) => {
