@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
-import { DEFAULT_TIMEOUT_MS, detectPortFromText, parseArgs, stripAnsi } from "../src/index.ts";
+import { DEFAULT_TIMEOUT_MS, detectPortFromText, exposeWithTailscale, parseArgs, stripAnsi } from "../src/index.ts";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoRoot, "dist", "index.js");
@@ -56,6 +56,51 @@ test("parseArgs uses documented defaults", () => {
     timeoutMs: DEFAULT_TIMEOUT_MS,
     openCheck: true,
   });
+});
+
+test("exposeWithTailscale explains how to fix Tailscale Serve permission errors", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "lizardtail-test-"));
+  const tailscalePath = path.join(tempDir, "tailscale");
+  const tailscaleLog = path.join(tempDir, "tailscale.log");
+  const originalPath = process.env.PATH;
+
+  await writeFile(
+    tailscalePath,
+    `#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$TAILSCALE_LOG"
+if [ "$1" = "status" ]; then
+  echo 'ok'
+  exit 0
+fi
+if [ "$1" = "serve" ]; then
+  echo 'sending serve config: Access denied: serve config denied' >&2
+  echo "Use 'sudo tailscale serve --bg http://127.0.0.1:3001'." >&2
+  echo "To not require root, use 'sudo tailscale set --operator=\$USER' once." >&2
+  exit 1
+fi
+exit 1
+`,
+    { mode: 0o755 },
+  );
+
+  try {
+    process.env.PATH = `${tempDir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.TAILSCALE_LOG = tailscaleLog;
+
+    await assert.rejects(
+      exposeWithTailscale("127.0.0.1", 3001),
+      /sudo tailscale set --operator=\$USER[\s\S]*sudo tailscale serve --bg http:\/\/127\.0\.0\.1:3001/,
+    );
+
+    const calls = await readFile(tailscaleLog, "utf8");
+    assert.match(calls, /status/);
+    assert.match(calls, /serve --bg http:\/\/127\.0\.0\.1:3001/);
+    assert.doesNotMatch(calls, /serve --bg 3001/);
+  } finally {
+    process.env.PATH = originalPath;
+    delete process.env.TAILSCALE_LOG;
+    await rm(tempDir, { recursive: true, force: true });
+  }
 });
 
 test("CLI starts a command, detects its port, and calls tailscale serve", async () => {

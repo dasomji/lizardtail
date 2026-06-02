@@ -157,6 +157,29 @@ function validDetectedPort(value: string): number | undefined {
   return Number.isInteger(port) && port > 0 && port <= 65_535 ? port : undefined;
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isTailscaleServePermissionError(error: unknown): boolean {
+  const message = errorMessage(error).toLowerCase();
+  return message.includes("access denied") && (message.includes("sudo tailscale serve") || message.includes("operator"));
+}
+
+function tailscaleServePermissionHelp(target: string): string {
+  return `Tailscale refused to update Serve config without elevated privileges.
+
+Run this once to let your user manage Tailscale Serve:
+
+  sudo tailscale set --operator=$USER
+
+Then rerun lizardtail.
+
+Or expose this server manually with:
+
+  sudo tailscale serve --bg ${target}`;
+}
+
 async function exec(command: string, args: string[], opts: { input?: string } = {}): Promise<{ stdout: string; stderr: string }> {
   const child = spawn(command, args, {
     stdio: [opts.input ? "pipe" : "ignore", "pipe", "pipe"],
@@ -223,8 +246,20 @@ export async function exposeWithTailscale(host: string, port: number): Promise<s
   try {
     await exec("tailscale", ["serve", "--bg", target]);
   } catch (firstError) {
+    if (isTailscaleServePermissionError(firstError)) {
+      throw new Error(tailscaleServePermissionHelp(target));
+    }
+
     if (host !== "127.0.0.1" && host !== "localhost") throw firstError;
-    await exec("tailscale", ["serve", "--bg", String(port)]);
+
+    try {
+      await exec("tailscale", ["serve", "--bg", String(port)]);
+    } catch (fallbackError) {
+      if (isTailscaleServePermissionError(fallbackError)) {
+        throw new Error(tailscaleServePermissionHelp(target));
+      }
+      throw fallbackError;
+    }
   }
 
   const { stdout } = await exec("tailscale", ["status", "--json"]);
@@ -266,7 +301,7 @@ export async function main(): Promise<void> {
       const tailscaleUrl = await exposeWithTailscale(options.host, port);
       console.error(`lizardtail: serving via Tailscale: ${tailscaleUrl}\n`);
     })().catch((error: unknown) => {
-      console.error(`lizardtail: failed to expose server: ${error instanceof Error ? error.message : String(error)}`);
+      console.error(`lizardtail: failed to expose server: ${errorMessage(error)}`);
       stopChild();
       process.exitCode = 1;
     });
@@ -334,7 +369,7 @@ function isCliEntrypoint(): boolean {
 
 if (isCliEntrypoint()) {
   main().catch((error: unknown) => {
-    console.error(`lizardtail: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`lizardtail: ${errorMessage(error)}`);
     process.exit(1);
   });
 }

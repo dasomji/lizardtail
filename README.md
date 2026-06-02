@@ -31,6 +31,11 @@ Use it when your dev server is running on a remote machine and you want to open 
 - Tailscale installed and available as `tailscale` on `PATH`.
 - The device must be logged into Tailscale.
 - Tailscale Serve must be available for the device/tailnet.
+- Your user must be allowed to update Tailscale Serve config. If `tailscale serve` says access is denied, run this once:
+
+  ```bash
+  sudo tailscale set --operator=$USER
+  ```
 
 Check Tailscale before using `lizardtail`:
 
@@ -177,6 +182,24 @@ Then check Serve support and current mappings:
 tailscale serve --help
 tailscale serve status
 ```
+
+### `Access denied: serve config denied`
+
+Some Tailscale installs only allow root, or the configured Tailscale operator, to change Serve config. If you see:
+
+```text
+Access denied: serve config denied
+Use 'sudo tailscale serve ...'
+To not require root, use 'sudo tailscale set --operator=$USER' once.
+```
+
+run:
+
+```bash
+sudo tailscale set --operator=$USER
+```
+
+Then rerun `lizardtail`. This is a one-time local machine setup step.
 
 ### Browser cannot load assets
 
