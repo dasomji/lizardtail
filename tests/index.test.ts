@@ -58,6 +58,59 @@ test("parseArgs uses documented defaults", () => {
   });
 });
 
+test("parseArgs supports an explicit Tailscale HTTPS port", () => {
+  assert.deepEqual(parseArgs(["--tailscale-port", "8450", "pnpm", "dev"]), {
+    command: ["pnpm", "dev"],
+    host: "127.0.0.1",
+    tailscalePort: 8450,
+    timeoutMs: DEFAULT_TIMEOUT_MS,
+    openCheck: true,
+  });
+});
+
+test("exposeWithTailscale can expose on an explicit Tailscale HTTPS port", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "lizardtail-test-"));
+  const tailscalePath = path.join(tempDir, "tailscale");
+  const tailscaleLog = path.join(tempDir, "tailscale.log");
+  const originalPath = process.env.PATH;
+
+  await writeFile(
+    tailscalePath,
+    `#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$TAILSCALE_LOG"
+if [ "$1" = "status" ] && [ "$2" = "--json" ]; then
+  echo '{"Self":{"DNSName":"test-host.tailnet.ts.net."}}'
+  exit 0
+fi
+if [ "$1" = "status" ]; then
+  echo 'ok'
+  exit 0
+fi
+if [ "$1" = "serve" ]; then
+  echo 'serve ok'
+  exit 0
+fi
+exit 1
+`,
+    { mode: 0o755 },
+  );
+
+  try {
+    process.env.PATH = `${tempDir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.TAILSCALE_LOG = tailscaleLog;
+
+    const url = await exposeWithTailscale("127.0.0.1", 3001, 8450);
+
+    assert.equal(url, "https://test-host.tailnet.ts.net:8450");
+    const calls = await readFile(tailscaleLog, "utf8");
+    assert.match(calls, /serve --bg --https 8450 http:\/\/127\.0\.0\.1:3001/);
+  } finally {
+    process.env.PATH = originalPath;
+    delete process.env.TAILSCALE_LOG;
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("exposeWithTailscale explains how to fix Tailscale Serve permission errors", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "lizardtail-test-"));
   const tailscalePath = path.join(tempDir, "tailscale");

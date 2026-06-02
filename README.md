@@ -24,6 +24,7 @@ Use it when your dev server is running on a remote machine and you want to open 
 - Runs `tailscale serve --bg http://127.0.0.1:<port>`.
 - Prints the HTTPS MagicDNS URL for the current Tailscale device.
 - Supports an explicit `--port` when automatic detection is not possible.
+- Supports `--tailscale-port` when you want the MagicDNS URL to include a specific HTTPS port.
 
 ## Requirements
 
@@ -99,6 +100,7 @@ lizardtail -- npm run dev -- --host 0.0.0.0
 | `--port <port>` | auto-detect | Expose this port instead of reading one from command output. |
 | `--host <host>` | `127.0.0.1` | Local host to pass to Tailscale Serve. |
 | `--timeout <ms>` | `30000` | How long to wait for a port to appear in command output. |
+| `--tailscale-port <port>` | `443` | Expose on this Tailscale HTTPS port and print it in the MagicDNS URL. Alias: `--https-port`. |
 | `--no-open-check` | enabled | Skip waiting for the local port to accept connections before calling Tailscale. |
 | `-h`, `--help` | | Show help. |
 
@@ -128,6 +130,26 @@ lizardtail -- npm run dev -- --host 0.0.0.0
 lizardtail --port 3000 npm run dev
 ```
 
+### MagicDNS URL with an explicit port
+
+By default, Tailscale Serve uses HTTPS port 443, so the URL has no port:
+
+```text
+https://my-host.tailabc.ts.net
+```
+
+If you want a URL with a port, choose the Tailscale HTTPS port separately:
+
+```bash
+lizardtail --tailscale-port 8450 pnpm dev
+```
+
+That prints a URL like:
+
+```text
+https://my-host.tailabc.ts.net:8450
+```
+
 ### Longer startup timeout
 
 ```bash
@@ -144,6 +166,12 @@ lizardtail --timeout 60000 pnpm dev
 
    ```bash
    tailscale serve --bg http://<host>:<port>
+   ```
+
+   If `--tailscale-port <port>` is set, it runs:
+
+   ```bash
+   tailscale serve --bg --https <tailscale-port> http://<host>:<port>
    ```
 
    On older Tailscale versions, if that form fails for `127.0.0.1`/`localhost`, it falls back to:

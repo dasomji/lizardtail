@@ -11,6 +11,7 @@ export interface Options {
   command: string[];
   host: string;
   port?: number;
+  tailscalePort?: number;
   timeoutMs: number;
   openCheck: boolean;
 }
@@ -25,12 +26,15 @@ Options:
   --port <port>        Expose this port instead of detecting one from output.
   --host <host>        Local host to expose. Default: 127.0.0.1
   --timeout <ms>       Port-detection timeout. Default: ${DEFAULT_TIMEOUT_MS}
+  --tailscale-port <port>
+                       Expose on this Tailscale HTTPS port instead of 443.
   --no-open-check      Skip waiting for the local port to accept connections.
   -h, --help           Show this help.
 
 Examples:
   lizardtail pnpm dev
   lizardtail --port 3000 npm run dev
+  lizardtail --tailscale-port 8450 pnpm dev
 `);
 }
 
@@ -86,6 +90,23 @@ export function parseArgs(argv: string[]): Options {
 
     if (arg.startsWith("--host=")) {
       options.host = arg.slice("--host=".length);
+      continue;
+    }
+
+    if (arg === "--tailscale-port" || arg === "--https-port") {
+      const value = argv[++i];
+      if (!value) usage();
+      options.tailscalePort = parsePort(value);
+      continue;
+    }
+
+    if (arg.startsWith("--tailscale-port=")) {
+      options.tailscalePort = parsePort(arg.slice("--tailscale-port=".length));
+      continue;
+    }
+
+    if (arg.startsWith("--https-port=")) {
+      options.tailscalePort = parsePort(arg.slice("--https-port=".length));
       continue;
     }
 
@@ -166,7 +187,18 @@ function isTailscaleServePermissionError(error: unknown): boolean {
   return message.includes("access denied") && (message.includes("sudo tailscale serve") || message.includes("operator"));
 }
 
-function tailscaleServePermissionHelp(target: string): string {
+function tailscaleServeCommand(target: string, tailscalePort?: number): string[] {
+  const args = ["serve", "--bg"];
+  if (tailscalePort !== undefined) args.push("--https", String(tailscalePort));
+  args.push(target);
+  return args;
+}
+
+function tailscaleUrl(dnsName: string, tailscalePort?: number): string {
+  return tailscalePort === undefined ? `https://${dnsName}` : `https://${dnsName}:${tailscalePort}`;
+}
+
+function tailscaleServePermissionHelp(target: string, tailscalePort?: number): string {
   return `Tailscale refused to update Serve config without elevated privileges.
 
 Run this once to let your user manage Tailscale Serve:
@@ -177,7 +209,7 @@ Then rerun lizardtail.
 
 Or expose this server manually with:
 
-  sudo tailscale serve --bg ${target}`;
+  sudo tailscale ${tailscaleServeCommand(target, tailscalePort).join(" ")}`;
 }
 
 async function exec(command: string, args: string[], opts: { input?: string } = {}): Promise<{ stdout: string; stderr: string }> {
@@ -239,24 +271,24 @@ export async function waitForOpenPort(host: string, port: number, timeoutMs: num
   throw new Error(`timed out waiting for ${host}:${port} to accept connections`);
 }
 
-export async function exposeWithTailscale(host: string, port: number): Promise<string> {
+export async function exposeWithTailscale(host: string, port: number, tailscalePort?: number): Promise<string> {
   await exec("tailscale", ["status"]);
 
   const target = `http://${host}:${port}`;
   try {
-    await exec("tailscale", ["serve", "--bg", target]);
+    await exec("tailscale", tailscaleServeCommand(target, tailscalePort));
   } catch (firstError) {
     if (isTailscaleServePermissionError(firstError)) {
-      throw new Error(tailscaleServePermissionHelp(target));
+      throw new Error(tailscaleServePermissionHelp(target, tailscalePort));
     }
 
     if (host !== "127.0.0.1" && host !== "localhost") throw firstError;
 
     try {
-      await exec("tailscale", ["serve", "--bg", String(port)]);
+      await exec("tailscale", tailscaleServeCommand(String(port), tailscalePort));
     } catch (fallbackError) {
       if (isTailscaleServePermissionError(fallbackError)) {
-        throw new Error(tailscaleServePermissionHelp(target));
+        throw new Error(tailscaleServePermissionHelp(target, tailscalePort));
       }
       throw fallbackError;
     }
@@ -266,10 +298,10 @@ export async function exposeWithTailscale(host: string, port: number): Promise<s
   const status = JSON.parse(stdout) as { Self?: { DNSName?: string; TailscaleIPs?: string[] } };
   const dnsName = status.Self?.DNSName?.replace(/\.$/, "");
 
-  if (dnsName) return `https://${dnsName}`;
+  if (dnsName) return tailscaleUrl(dnsName, tailscalePort);
 
   const ip = status.Self?.TailscaleIPs?.find((value) => /^\d+\.\d+\.\d+\.\d+$/.test(value));
-  if (ip) return `https://${ip}`;
+  if (ip) return tailscaleUrl(ip, tailscalePort);
 
   throw new Error("could not determine this device's Tailscale DNS name or IP");
 }
@@ -298,7 +330,7 @@ export async function main(): Promise<void> {
       const localUrl = `http://${options.host}:${port}`;
       console.error(`\nlizardtail: detected local server on ${localUrl}`);
       if (options.openCheck) await waitForOpenPort(options.host, port, 10_000);
-      const tailscaleUrl = await exposeWithTailscale(options.host, port);
+      const tailscaleUrl = await exposeWithTailscale(options.host, port, options.tailscalePort);
       console.error(`lizardtail: serving via Tailscale: ${tailscaleUrl}\n`);
     })().catch((error: unknown) => {
       console.error(`lizardtail: failed to expose server: ${errorMessage(error)}`);
