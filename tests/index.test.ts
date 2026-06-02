@@ -214,12 +214,12 @@ exit 1
 
     await assert.rejects(
       exposeWithTailscale("127.0.0.1", 3001),
-      /sudo tailscale set --operator=\$USER[\s\S]*sudo tailscale serve --bg http:\/\/127\.0\.0\.1:3001/,
+      /sudo tailscale set --operator=\$USER[\s\S]*sudo tailscale serve --bg --https 8443 http:\/\/127\.0\.0\.1:3001/,
     );
 
     const calls = await readFile(tailscaleLog, "utf8");
     assert.match(calls, /status/);
-    assert.match(calls, /serve --bg http:\/\/127\.0\.0\.1:3001/);
+    assert.match(calls, /serve --bg --https 8443 http:\/\/127\.0\.0\.1:3001/);
     assert.doesNotMatch(calls, /serve --bg 3001/);
   } finally {
     process.env.PATH = originalPath;
@@ -302,7 +302,8 @@ server.listen(0, "127.0.0.1", () => {
 
     const calls = await readFile(tailscaleLog, "utf8");
     assert.match(calls, /status/);
-    assert.match(calls, /serve --bg http:\/\/127\.0\.0\.1:\d+/);
+    assert.match(calls, /serve --bg --https 8443 http:\/\/127\.0\.0\.1:\d+/);
+    assert.match(calls, /serve --https=8443 off/);
     assert.match(calls, /status --json/);
   } finally {
     await rm(tempDir, { recursive: true, force: true });

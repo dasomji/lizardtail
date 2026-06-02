@@ -21,6 +21,7 @@ export interface Options {
 }
 
 export const DEFAULT_TIMEOUT_MS = 30_000;
+export const DEFAULT_TAILSCALE_HTTPS_PORT = 8443;
 const DETECTION_SETTLE_MS = 1_500;
 
 export function printUsage(): void {
@@ -32,7 +33,7 @@ Options:
   --host <host>        Local host to expose. Default: 127.0.0.1
   --timeout <ms>       Port-detection timeout. Default: ${DEFAULT_TIMEOUT_MS}
   --tailscale-port <port>
-                       Expose the main app on this Tailscale HTTPS port instead of 443.
+                       Expose the main app on this Tailscale HTTPS port. Default: first free ${DEFAULT_TAILSCALE_HTTPS_PORT}+ port.
   --vite-tailscale-port <port>
                        Expose a detected Laravel Vite server on this Tailscale HTTPS port.
   --no-open-check      Skip waiting for the local port to accept connections.
@@ -402,13 +403,8 @@ function normalizeProxyTarget(target: string): string {
   return target.replace("http://localhost:", "http://127.0.0.1:").replace(/\/$/, "");
 }
 
-async function resolveTailscaleHttpsPort(target: string, requestedPort?: number): Promise<number | undefined> {
-  if (requestedPort !== undefined) return requestedPort;
-
-  const defaultProxy = await getTailscaleServeProxy(443);
-  if (!defaultProxy || normalizeProxyTarget(defaultProxy) === normalizeProxyTarget(target)) return undefined;
-
-  return chooseTailscaleHttpsPort();
+async function resolveTailscaleHttpsPort(_target: string, requestedPort?: number): Promise<number> {
+  return requestedPort ?? chooseTailscaleHttpsPort();
 }
 
 async function chooseTailscaleHttpsPort(excludedPort?: number): Promise<number> {
@@ -423,7 +419,7 @@ async function chooseTailscaleHttpsPort(excludedPort?: number): Promise<number> 
     }
   }
 
-  for (let port = 8443; port <= 8999; port += 1) {
+  for (let port = DEFAULT_TAILSCALE_HTTPS_PORT; port <= 8999; port += 1) {
     if (port !== excludedPort && !usedPorts.has(port)) return port;
   }
 
@@ -509,7 +505,12 @@ function corsHeaders(): Record<string, string> {
   };
 }
 
-export async function exposeWithTailscale(host: string, port: number, tailscalePort?: number): Promise<string> {
+interface TailscaleExposure {
+  url: string;
+  httpsPort: number;
+}
+
+async function exposeWithTailscaleDetailed(host: string, port: number, tailscalePort?: number): Promise<TailscaleExposure> {
   await exec("tailscale", ["status"]);
 
   const target = `http://${host}:${port}`;
@@ -538,12 +539,20 @@ export async function exposeWithTailscale(host: string, port: number, tailscaleP
   const status = JSON.parse(stdout) as { Self?: { DNSName?: string; TailscaleIPs?: string[] } };
   const dnsName = status.Self?.DNSName?.replace(/\.$/, "");
 
-  if (dnsName) return tailscaleUrl(dnsName, resolvedTailscalePort);
+  if (dnsName) return { url: tailscaleUrl(dnsName, resolvedTailscalePort), httpsPort: resolvedTailscalePort };
 
   const ip = status.Self?.TailscaleIPs?.find((value) => /^\d+\.\d+\.\d+\.\d+$/.test(value));
-  if (ip) return tailscaleUrl(ip, resolvedTailscalePort);
+  if (ip) return { url: tailscaleUrl(ip, resolvedTailscalePort), httpsPort: resolvedTailscalePort };
 
   throw new Error("could not determine this device's Tailscale DNS name or IP");
+}
+
+export async function exposeWithTailscale(host: string, port: number, tailscalePort?: number): Promise<string> {
+  return (await exposeWithTailscaleDetailed(host, port, tailscalePort)).url;
+}
+
+async function removeTailscaleServePort(port: number): Promise<void> {
+  await exec("tailscale", ["serve", `--https=${port}`, "off"]);
 }
 
 export async function main(): Promise<void> {
@@ -567,6 +576,19 @@ export async function main(): Promise<void> {
   let exposing: Promise<void> | undefined;
   let recentOutput = "";
   let detectionTimer: NodeJS.Timeout | undefined;
+  const createdTailscalePorts = new Set<number>();
+
+  const cleanupTailscaleServe = async () => {
+    for (const port of createdTailscalePorts) {
+      try {
+        await removeTailscaleServePort(port);
+        console.error(`lizardtail: removed Tailscale Serve mapping on HTTPS port ${port}`);
+      } catch (error) {
+        console.error(`lizardtail: failed to remove Tailscale Serve mapping on HTTPS port ${port}: ${errorMessage(error)}`);
+      }
+    }
+    createdTailscalePorts.clear();
+  };
 
   const stopChild = () => {
     if (!child.killed) child.kill("SIGTERM");
@@ -579,8 +601,9 @@ export async function main(): Promise<void> {
       const localUrl = `http://${options.host}:${port}`;
       console.error(`\nlizardtail: detected local server on ${localUrl}`);
       if (options.openCheck) await waitForOpenPort(options.host, port, 10_000);
-      const tailscaleUrl = await exposeWithTailscale(options.host, port, options.tailscalePort);
-      console.error(`lizardtail: serving via Tailscale: ${tailscaleUrl}\n`);
+      const exposure = await exposeWithTailscaleDetailed(options.host, port, options.tailscalePort);
+      createdTailscalePorts.add(exposure.httpsPort);
+      console.error(`lizardtail: serving via Tailscale: ${exposure.url}\n`);
     })().catch((error: unknown) => {
       console.error(`lizardtail: failed to expose server: ${errorMessage(error)}`);
       stopChild();
@@ -602,14 +625,16 @@ export async function main(): Promise<void> {
         await waitForOpenPort(viteHost, vitePort, 10_000);
       }
 
-      const appUrl = await exposeWithTailscale(options.host, appPort, options.tailscalePort);
+      const appExposure = await exposeWithTailscaleDetailed(options.host, appPort, options.tailscalePort);
+      createdTailscalePorts.add(appExposure.httpsPort);
       const viteProxy = await startCorsProxy(viteHost, vitePort);
-      const viteTailscalePort = options.viteTailscalePort ?? (await chooseTailscaleHttpsPort(options.tailscalePort));
-      const viteUrl = await exposeWithTailscale(viteProxy.host, viteProxy.port, viteTailscalePort);
-      const hotPath = await writeLaravelHotFile(viteUrl);
+      const viteTailscalePort = options.viteTailscalePort ?? (await chooseTailscaleHttpsPort(appExposure.httpsPort));
+      const viteExposure = await exposeWithTailscaleDetailed(viteProxy.host, viteProxy.port, viteTailscalePort);
+      createdTailscalePorts.add(viteExposure.httpsPort);
+      const hotPath = await writeLaravelHotFile(viteExposure.url);
 
-      console.error(`lizardtail: serving Laravel via Tailscale: ${appUrl}`);
-      console.error(`lizardtail: serving Vite assets via Tailscale: ${viteUrl}`);
+      console.error(`lizardtail: serving Laravel via Tailscale: ${appExposure.url}`);
+      console.error(`lizardtail: serving Vite assets via Tailscale: ${viteExposure.url}`);
       console.error(`lizardtail: proxying Vite through local CORS proxy: http://${viteProxy.host}:${viteProxy.port} -> ${viteLocalUrl}`);
       if (hotPath) console.error(`lizardtail: wrote Laravel Vite hot file: ${hotPath}`);
       console.error("");
@@ -679,6 +704,7 @@ export async function main(): Promise<void> {
   if (timeout) clearTimeout(timeout);
   if (detectionTimer) clearTimeout(detectionTimer);
   if (exposing) await exposing;
+  await cleanupTailscaleServe();
 
   if (signal) process.kill(process.pid, signal);
   process.exit(code ?? process.exitCode ?? 0);

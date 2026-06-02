@@ -23,12 +23,13 @@ Use it when your dev server is running on a remote machine and you want to open 
 - Ignores timing output like `ready in 500 ms` so it does not accidentally expose port `500`.
 - Waits briefly after the first candidate port so multi-process commands, such as Laravel plus Vite, can print the better app-server URL.
 - Waits for the detected port to accept local connections before exposing it.
-- Runs `tailscale serve --bg http://127.0.0.1:<port>`.
+- Runs `tailscale serve --bg --https <tailscale-port> http://127.0.0.1:<port>`.
 - Prints the HTTPS MagicDNS URL for the current Tailscale device.
 - Supports an explicit `--port` when automatic detection is not possible.
 - Supports `--tailscale-port` when you want the MagicDNS URL to include a specific HTTPS port.
 - Detects Laravel + Vite dev output, exposes both servers, rewrites Laravel's `public/hot` file to the Tailscale Vite URL, and proxies Vite assets with CORS headers so module scripts can load cross-origin.
-- Avoids overwriting an existing default Tailscale Serve mapping: if `https://<host>` is already serving another project, `lizardtail` chooses the first free `8443+` HTTPS port and prints that URL.
+- Uses a stable alternate Tailscale HTTPS port by default: first free port from `8443` upward.
+- Cleans up the Tailscale Serve mappings it created when the child command exits or you press `Ctrl+C`.
 
 ## Requirements
 
@@ -104,7 +105,7 @@ lizardtail -- npm run dev -- --host 0.0.0.0
 | `--port <port>` | auto-detect | Expose this port instead of reading one from command output. |
 | `--host <host>` | `127.0.0.1` | Local host to pass to Tailscale Serve. |
 | `--timeout <ms>` | `30000` | How long to wait for a port to appear in command output. |
-| `--tailscale-port <port>` | `443` | Expose the main app on this Tailscale HTTPS port and print it in the MagicDNS URL. Alias: `--https-port`. |
+| `--tailscale-port <port>` | first free `8443+` | Expose the main app on this Tailscale HTTPS port and print it in the MagicDNS URL. Alias: `--https-port`. |
 | `--vite-tailscale-port <port>` | first free `8443+` | Expose a detected Laravel Vite asset server on this Tailscale HTTPS port. Alias: `--vite-https-port`. |
 | `--no-open-check` | enabled | Skip waiting for the local port to accept connections before calling Tailscale. |
 | `-h`, `--help` | | Show help. |
@@ -137,13 +138,13 @@ lizardtail --port 3000 npm run dev
 
 ### MagicDNS URL with an explicit port
 
-By default, Tailscale Serve uses HTTPS port 443, so the URL has no port when 443 is free or already points at the same local target:
+By default, `lizardtail` uses the first free Tailscale HTTPS port from `8443` upward, so multiple projects can be served at the same time:
 
 ```text
-https://my-host.tailabc.ts.net
+https://my-host.tailabc.ts.net:8443
 ```
 
-If port 443 is already serving another project, `lizardtail` automatically chooses the first free `8443+` port so multiple projects can be served at the same time. You can also choose the Tailscale HTTPS port explicitly:
+You can also choose the Tailscale HTTPS port explicitly:
 
 ```bash
 lizardtail --tailscale-port 8450 pnpm dev
@@ -194,13 +195,8 @@ lizardtail --timeout 60000 pnpm dev
 2. It streams the command output to your terminal.
 3. It scans recent output for a local port.
 4. Once it finds a port, it waits for `127.0.0.1:<port>` or the configured `--host` to accept connections.
-5. It runs:
-
-   ```bash
-   tailscale serve --bg http://<host>:<port>
-   ```
-
-   If `--tailscale-port <port>` is set, it runs:
+5. It chooses the first free Tailscale HTTPS port from `8443` upward, unless `--tailscale-port` was provided.
+6. It runs:
 
    ```bash
    tailscale serve --bg --https <tailscale-port> http://<host>:<port>
@@ -209,14 +205,24 @@ lizardtail --timeout 60000 pnpm dev
    On older Tailscale versions, if that form fails for `127.0.0.1`/`localhost`, it falls back to:
 
    ```bash
-   tailscale serve --bg <port>
+   tailscale serve --bg --https <tailscale-port> <port>
    ```
 
-6. It reads `tailscale status --json`, extracts the current device's MagicDNS name, and prints:
+7. It reads `tailscale status --json`, extracts the current device's MagicDNS name, and prints:
 
    ```text
-   https://<device-name>.<tailnet>.ts.net
+   https://<device-name>.<tailnet>.ts.net:<tailscale-port>
    ```
+
+## Shutdown behavior
+
+When the child command exits, or when you press `Ctrl+C`, `lizardtail` removes the Tailscale Serve mappings it created for that run:
+
+```bash
+tailscale serve --https=<port> off
+```
+
+It only tracks ports created by the current `lizardtail` process.
 
 ## Troubleshooting
 
