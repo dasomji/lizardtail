@@ -20,6 +20,8 @@ Use it when your dev server is running on a remote machine and you want to open 
 - Runs any command you pass it, such as `pnpm dev`, `npm run dev`, `bun run dev`, or `python -m http.server`.
 - Streams the child command's stdout/stderr normally.
 - Detects common dev-server output formats, including `http://localhost:5173`, `http://127.0.0.1:3000`, `started server on 0.0.0.0:8080`, and `PORT=4321`.
+- Ignores timing output like `ready in 500 ms` so it does not accidentally expose port `500`.
+- Waits briefly after the first candidate port so multi-process commands, such as Laravel plus Vite, can print the better app-server URL.
 - Waits for the detected port to accept local connections before exposing it.
 - Runs `tailscale serve --bg http://127.0.0.1:<port>`.
 - Prints the HTTPS MagicDNS URL for the current Tailscale device.
@@ -149,6 +151,22 @@ That prints a URL like:
 ```text
 https://my-host.tailabc.ts.net:8450
 ```
+
+### Laravel / `composer run dev`
+
+Laravel development commands often start both the PHP app server and the Vite asset server. `lizardtail` prefers output from the app server when it can see both ports:
+
+```bash
+lizardtail composer run dev
+```
+
+If your app server lands on a known port, you can force it:
+
+```bash
+lizardtail --port 8001 composer run dev
+```
+
+If browser assets fail to load, the Vite server may also need to be exposed or your Laravel/Vite config may need to allow the Tailscale hostname.
 
 ### Longer startup timeout
 

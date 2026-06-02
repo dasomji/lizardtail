@@ -17,6 +17,7 @@ export interface Options {
 }
 
 export const DEFAULT_TIMEOUT_MS = 30_000;
+const DETECTION_SETTLE_MS = 1_500;
 
 export function printUsage(): void {
   console.error(`Usage: lizardtail [options] -- <command> [args...]
@@ -158,19 +159,62 @@ export function stripAnsi(input: string): string {
   return input.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "");
 }
 
+interface PortCandidate {
+  port: number;
+  score: number;
+}
+
 export function detectPortFromText(text: string): number | undefined {
+  const candidates = detectPortCandidates(text);
+  candidates.sort((a, b) => b.score - a.score);
+  return candidates[0]?.port;
+}
+
+function detectPortCandidates(text: string): PortCandidate[] {
   const clean = stripAnsi(text);
+  const candidates: PortCandidate[] = [];
 
-  const localUrl = clean.match(/https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|::1)(?::(\d{1,5}))?/i);
-  if (localUrl?.[1]) return validDetectedPort(localUrl[1]);
+  for (const line of clean.split(/\r?\n/)) {
+    candidates.push(...detectPortCandidatesFromLine(line));
+  }
 
-  const anyLocalUrl = clean.match(/(?:Local|localhost|loopback|listening|ready|server|started|running)[^\n\r]*?(?:on|at|:)?\s*(?:https?:\/\/)?(?:[^\s:]+:)?(\d{2,5})/i);
-  if (anyLocalUrl?.[1]) return validDetectedPort(anyLocalUrl[1]);
+  return candidates;
+}
 
-  const portPhrase = clean.match(/\b(?:port|PORT)\s*(?:=|:|is|on)?\s*(\d{2,5})\b/);
-  if (portPhrase?.[1]) return validDetectedPort(portPhrase[1]);
+function detectPortCandidatesFromLine(line: string): PortCandidate[] {
+  const candidates: PortCandidate[] = [];
+  const lowerLine = line.toLowerCase();
+  const lineLooksLikeDuration = /\b\d{1,5}\s*ms\b/i.test(line);
+  const lineLooksLikeServer = /\b(server|listening|started|running)\b/i.test(line) || /\[server\]/i.test(line);
+  const lineLooksLikeVite = /\[vite\]|\bvite\b/i.test(line);
 
-  return undefined;
+  const localUrlPattern = /https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|::1):(\d{1,5})/gi;
+  for (const match of line.matchAll(localUrlPattern)) {
+    const port = validDetectedPort(match[2]);
+    if (!port) continue;
+
+    let score = 70;
+    if (lineLooksLikeServer) score += 30;
+    if (lineLooksLikeVite) score -= 15;
+    if (match[1] === "0.0.0.0") score -= 10;
+    candidates.push({ port, score });
+  }
+
+  if (lineLooksLikeDuration) return candidates;
+
+  const portPhrase = line.match(/\b(?:port|PORT)\s*(?:=|:|is|on)?\s*(\d{2,5})\b/);
+  if (portPhrase?.[1]) {
+    const port = validDetectedPort(portPhrase[1]);
+    if (port) candidates.push({ port, score: lowerLine.includes("in use") ? 20 : 45 });
+  }
+
+  const serverPort = line.match(/\b(?:listening|started|running|server)\b[^\n\r]*:(\d{2,5})\b/i);
+  if (serverPort?.[1]) {
+    const port = validDetectedPort(serverPort[1]);
+    if (port) candidates.push({ port, score: lineLooksLikeServer ? 60 : 40 });
+  }
+
+  return candidates;
 }
 
 function validDetectedPort(value: string): number | undefined {
@@ -318,6 +362,7 @@ export async function main(): Promise<void> {
   let exposed = false;
   let exposing: Promise<void> | undefined;
   let recentOutput = "";
+  let detectionTimer: NodeJS.Timeout | undefined;
 
   const stopChild = () => {
     if (!child.killed) child.kill("SIGTERM");
@@ -345,7 +390,14 @@ export async function main(): Promise<void> {
   const inspectChunk = (chunk: string) => {
     recentOutput = (recentOutput + chunk).slice(-8_000);
     const detectedPort = detectPortFromText(recentOutput);
-    if (detectedPort) expose(detectedPort);
+    if (!detectedPort || exposed || exposing) return;
+
+    if (detectionTimer) clearTimeout(detectionTimer);
+    detectionTimer = setTimeout(() => {
+      detectionTimer = undefined;
+      const settledPort = detectPortFromText(recentOutput);
+      if (settledPort) expose(settledPort);
+    }, DETECTION_SETTLE_MS);
   };
 
   child.stdout.on("data", (chunk: string) => {
@@ -383,6 +435,7 @@ export async function main(): Promise<void> {
 
   const [code, signal] = (await once(child, "exit")) as [number | null, NodeJS.Signals | null];
   if (timeout) clearTimeout(timeout);
+  if (detectionTimer) clearTimeout(detectionTimer);
   if (exposing) await exposing;
 
   if (signal) process.kill(process.pid, signal);

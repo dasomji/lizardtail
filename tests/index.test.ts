@@ -24,10 +24,22 @@ test("detectPortFromText strips ANSI escape sequences", () => {
   assert.equal(detectPortFromText(output), 24678);
 });
 
-test("detectPortFromText ignores invalid and missing ports", () => {
+test("detectPortFromText ignores invalid ports, missing ports, and build durations", () => {
   assert.equal(detectPortFromText("Server ready"), undefined);
   assert.equal(detectPortFromText("Local: http://localhost"), undefined);
   assert.equal(detectPortFromText("port 70000"), undefined);
+  assert.equal(detectPortFromText("VITE v8.0.13 ready in 500 ms"), undefined);
+});
+
+// Laravel's `composer run dev` commonly runs Vite and `php artisan serve` together.
+// Prefer the app server URL over Vite's asset server when both appear in the recent output.
+// Also ensure Vite's "ready in 500 ms" timing line is not mistaken for port 500.
+test("detectPortFromText prefers Laravel app server output over Vite output", () => {
+  const output = `[vite]   VITE v8.0.13  ready in 500 ms
+[vite]   ➜  Local:   http://localhost:5174/
+[server]    INFO  Server running on [http://127.0.0.1:8001].`;
+
+  assert.equal(detectPortFromText(output), 8001);
 });
 
 test("parseArgs parses options before the command", () => {
@@ -196,7 +208,7 @@ exit 1
 const server = http.createServer((req, res) => res.end("ok"));
 server.listen(0, "127.0.0.1", () => {
   console.log("Local: http://localhost:" + server.address().port);
-  setTimeout(() => server.close(), 1200);
+  setTimeout(() => server.close(), 2500);
 });`,
       ],
       {
