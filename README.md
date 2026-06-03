@@ -60,7 +60,21 @@ tailscale funnel --help
 
 ## Installation
 
-### From source
+Install from npm:
+
+```bash
+npm install -g lizardtail
+```
+
+Then run:
+
+```bash
+lizardtail help
+```
+
+### Development from source
+
+Use `git clone` only if you want to work on `lizardtail` itself:
 
 ```bash
 git clone https://github.com/dasomji/lizardtail.git
@@ -69,14 +83,6 @@ npm install
 npm run build
 npm link
 ```
-
-Then run:
-
-```bash
-lizardtail --help
-```
-
-### During development
 
 You can run the TypeScript source directly:
 
