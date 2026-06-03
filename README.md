@@ -1,6 +1,6 @@
 # lizardtail
 
-`lizardtail` runs a command, watches its output for a localhost server port, exposes that port with [Tailscale Serve](https://tailscale.com/kb/1242/tailscale-serve), and prints the private tailnet URL. Pass `--public` to use Tailscale Funnel intentionally.
+Lizardtail is a Tailscale Serve wrapper around other commands. It runs a command, watches its output for a localhost server port, exposes that port with [Tailscale Serve](https://tailscale.com/kb/1242/tailscale-serve), and prints the private tailnet URL. Pass `--public` to use Tailscale Funnel intentionally.
 
 ```bash
 lizardtail pnpm dev
