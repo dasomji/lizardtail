@@ -6,6 +6,12 @@ Lizardtail is a Tailscale Serve wrapper around other commands. It runs a command
 lizardtail pnpm dev
 ```
 
+For Pi Postbox, use the built-in shortcut:
+
+```bash
+lizardtail postbox
+```
+
 ```text
 Local: http://localhost:5173
 
@@ -18,6 +24,7 @@ Use it when your dev server is running on a remote machine and you want to open 
 ## Features
 
 - Runs any command you pass it, such as `pnpm dev`, `npm run dev`, `bun run dev`, or `python -m http.server`.
+- Supports `lizardtail postbox` as a shortcut that launches `pi-postbox-server`, detects its actual printed local port, and exposes that port.
 - Streams the child command's stdout/stderr normally.
 - Detects common dev-server output formats, including `http://localhost:5173`, `http://127.0.0.1:3000`, `started server on 0.0.0.0:8080`, and `PORT=4321`.
 - Ignores timing output like `ready in 500 ms` so it does not accidentally expose port `500`.
@@ -38,6 +45,7 @@ Use it when your dev server is running on a remote machine and you want to open 
 
 - Node.js 20 or newer.
 - Tailscale installed and available as `tailscale` on `PATH`.
+- For `lizardtail postbox`, `pi-postbox-server` must also be installed or linked on `PATH`.
 - The device must be logged into Tailscale.
 - Tailscale Serve must be available for the device/tailnet.
 - For `--public`, Tailscale Funnel must be enabled for the device/tailnet.
@@ -102,6 +110,7 @@ node dist/index.js pnpm dev
 ```bash
 lizardtail [options] -- <command> [args...]
 lizardtail [options] <command> [args...]
+lizardtail postbox [pi-postbox-server args...]
 lizardtail help [topic]
 lizardtail config init
 ```
@@ -135,6 +144,21 @@ These commands are meant for both humans and coding agents: they describe usage,
 | `-h`, `--help` | | Show help. |
 
 ## Examples
+
+### Pi Postbox
+
+```bash
+lizardtail postbox
+```
+
+This starts `pi-postbox-server` with `--host 127.0.0.1` and preferred `--port 3000`, passes any extra arguments after `postbox` through to `pi-postbox-server`, waits for the server's printed listening URL, and exposes the detected actual port privately to your tailnet. If Postbox falls back because port `3000` is busy, lizardtail exposes the fallback port.
+
+```bash
+lizardtail postbox --database ~/.pi-postbox/postbox.sqlite
+lizardtail --public postbox
+```
+
+With this shortcut, `lizardtail --port 3333 postbox` passes `3333` as Postbox's preferred local port and still detects the actual port before exposing.
 
 ### Vite / frontend dev server
 

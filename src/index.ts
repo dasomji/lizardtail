@@ -73,6 +73,7 @@ Options:
   -h, --help           Show this help.
 
 Examples:
+  lizardtail postbox
   lizardtail pnpm dev
   lizardtail --port 3000 npm run dev
   lizardtail --tailscale-port 8450 pnpm dev
@@ -111,6 +112,7 @@ If a config file exists, its blockedPorts list replaces the built-in default lis
 Run a dev server command, detect its local port, and expose it through Tailscale.
 
 Common usage:
+  lizardtail postbox
   lizardtail pnpm dev
   lizardtail --port 3000 npm run dev
   lizardtail --tailscale-port 8450 pnpm dev
@@ -128,6 +130,9 @@ Safety:
 
 Help topics:
   lizardtail help config
+
+Postbox shortcut:
+  lizardtail postbox          Run pi-postbox-server with local defaults, detect its actual port, and expose it.
 
 Other commands:
   lizardtail config init      Write a starter config file.
@@ -282,6 +287,25 @@ export function parseArgs(argv: string[]): Options {
   return options;
 }
 
+function commandArgsIncludeOption(args: string[], name: string): boolean {
+  return args.some((arg) => arg === name || arg.startsWith(`${name}=`));
+}
+
+export function applyPostboxAlias(options: Options): Options {
+  if (options.command[0] !== "postbox") return options;
+
+  const extraArgs = options.command.slice(1);
+  const postboxArgs: string[] = [];
+  if (!commandArgsIncludeOption(extraArgs, "--host")) postboxArgs.push("--host", options.host);
+  if (!commandArgsIncludeOption(extraArgs, "--port")) postboxArgs.push("--port", String(options.port ?? 3000));
+
+  const { port: _preferredPostboxPort, ...detectionOptions } = options;
+  return {
+    ...detectionOptions,
+    command: ["pi-postbox-server", ...postboxArgs, ...extraArgs],
+  };
+}
+
 function parsePort(value: string): number {
   const port = Number(value);
   if (!Number.isInteger(port) || port < 1 || port > 65_535) {
@@ -391,6 +415,7 @@ function detectPortCandidates(text: string): PortCandidate[] {
 function detectPortCandidatesFromLine(line: string): PortCandidate[] {
   const candidates: PortCandidate[] = [];
   const lowerLine = line.toLowerCase();
+  if (/\b(?:in use|already in use|eaddrinuse)\b/i.test(line)) return candidates;
   const lineLooksLikeDuration = /\b\d{1,5}\s*ms\b/i.test(line);
   const lineLooksLikeServer = /\b(server|listening|started|running)\b/i.test(line) || /\[server\]/i.test(line);
   const lineLooksLikeVite = /\[vite\]|\bvite\b/i.test(line);
@@ -742,7 +767,9 @@ export async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   if (await handleMetaCommand(argv)) return;
 
-  const options = parseArgs(argv);
+  const parsedOptions = parseArgs(argv);
+  const postboxAlias = parsedOptions.command[0] === "postbox";
+  const options = applyPostboxAlias(parsedOptions);
   const config = await loadConfig();
   const [command, ...args] = options.command;
   const tailscaleDnsName = await getTailscaleDnsName().catch(() => undefined);
@@ -872,7 +899,11 @@ export async function main(): Promise<void> {
   });
 
   child.on("error", (error) => {
-    console.error(`lizardtail: failed to start ${command}: ${error.message}`);
+    if (postboxAlias && (error as NodeJS.ErrnoException).code === "ENOENT") {
+      console.error("lizardtail: failed to start pi-postbox-server: not found on PATH. Install or link @pi-postbox/server so the pi-postbox-server binary is available.");
+    } else {
+      console.error(`lizardtail: failed to start ${command}: ${error.message}`);
+    }
     process.exit(1);
   });
 

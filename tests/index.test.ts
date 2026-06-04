@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
-import { DEFAULT_TIMEOUT_MS, detectLaravelViteServers, detectPortFromText, exposeWithTailscale, parseArgs, stripAnsi } from "../src/index.ts";
+import { DEFAULT_TIMEOUT_MS, applyPostboxAlias, detectLaravelViteServers, detectPortFromText, exposeWithTailscale, parseArgs, stripAnsi } from "../src/index.ts";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoRoot, "dist", "index.js");
@@ -38,11 +38,14 @@ test("detectPortFromText strips ANSI escape sequences", () => {
   assert.equal(detectPortFromText(output), 24678);
 });
 
-test("detectPortFromText ignores invalid ports, missing ports, and build durations", () => {
+test("detectPortFromText ignores invalid ports, missing ports, build durations, and in-use lines", () => {
   assert.equal(detectPortFromText("Server ready"), undefined);
   assert.equal(detectPortFromText("Local: http://localhost"), undefined);
   assert.equal(detectPortFromText("port 70000"), undefined);
   assert.equal(detectPortFromText("VITE v8.0.13 ready in 500 ms"), undefined);
+  assert.equal(detectPortFromText("port 3000 is already in use"), undefined);
+  assert.equal(detectPortFromText("Error: listen EADDRINUSE: address already in use http://127.0.0.1:3000"), undefined);
+  assert.equal(detectPortFromText("port 3000 is already in use\npi-postbox-server listening on http://127.0.0.1:3001"), 3001);
 });
 
 // Laravel's `composer run dev` commonly runs Vite and `php artisan serve` together.
@@ -99,6 +102,34 @@ test("parseArgs uses documented defaults", () => {
   });
 });
 
+test("applyPostboxAlias expands lizardtail postbox to pi-postbox-server defaults and keeps detection enabled", () => {
+  assert.deepEqual(applyPostboxAlias(parseArgs(["--port", "3333", "postbox", "--database", ":memory:"])), {
+    command: ["pi-postbox-server", "--host", "127.0.0.1", "--port", "3333", "--database", ":memory:"],
+    host: "127.0.0.1",
+    timeoutMs: DEFAULT_TIMEOUT_MS,
+    openCheck: true,
+    public: false,
+  });
+});
+
+test("applyPostboxAlias preserves explicit Postbox host and port overrides", () => {
+  assert.deepEqual(applyPostboxAlias(parseArgs(["postbox", "--port", "3333", "--host=localhost"])), {
+    command: ["pi-postbox-server", "--port", "3333", "--host=localhost"],
+    host: "127.0.0.1",
+    timeoutMs: DEFAULT_TIMEOUT_MS,
+    openCheck: true,
+    public: false,
+  });
+
+  assert.deepEqual(applyPostboxAlias(parseArgs(["postbox", "--port=4444", "--host", "localhost"])), {
+    command: ["pi-postbox-server", "--port=4444", "--host", "localhost"],
+    host: "127.0.0.1",
+    timeoutMs: DEFAULT_TIMEOUT_MS,
+    openCheck: true,
+    public: false,
+  });
+});
+
 test("parseArgs supports explicit Tailscale HTTPS ports", () => {
   assert.deepEqual(parseArgs(["--tailscale-port", "8450", "--vite-tailscale-port", "8453", "pnpm", "dev"]), {
     command: ["pnpm", "dev"],
@@ -139,6 +170,48 @@ test("CLI help command prints detailed documentation", async () => {
   assert.match(stdout, /Lizard Tail configuration/);
   assert.match(stdout, /blockedPorts/);
   assert.match(stdout, /lizardtail config init/);
+});
+
+test("CLI help documents the Postbox shortcut", async () => {
+  const child = spawn(process.execPath, [cliPath, "help"], {
+    cwd: repoRoot,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  let stdout = "";
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (chunk: string) => {
+    stdout += chunk;
+  });
+
+  const exitCode = await new Promise<number | null>((resolve) => child.on("exit", resolve));
+
+  assert.equal(exitCode, 0);
+  assert.match(stdout, /lizardtail postbox/);
+});
+
+test("CLI prints an actionable error when the Postbox binary is missing", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "lizardtail-test-"));
+  try {
+    const child = spawn(process.execPath, [cliPath, "postbox"], {
+      cwd: repoRoot,
+      env: { ...process.env, PATH: tempDir },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let stderr = "";
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+
+    const exitCode = await new Promise<number | null>((resolve) => child.on("exit", resolve));
+
+    assert.equal(exitCode, 1);
+    assert.match(stderr, /failed to start pi-postbox-server: not found on PATH/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
 });
 
 test("exposeWithTailscale can expose on an explicit Tailscale HTTPS port", async () => {
@@ -537,6 +610,90 @@ server.listen(0, "127.0.0.1", () => {
     assert.match(calls, /serve --bg --https 8443 http:\/\/127\.0\.0\.1:\d+/);
     assert.match(calls, /serve --https=8443 off/);
     assert.match(calls, /status --json/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("CLI postbox shortcut starts pi-postbox-server and exposes its detected port", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "lizardtail-postbox-test-"));
+  await writeHostCommandStubs(tempDir);
+  const tailscalePath = path.join(tempDir, "tailscale");
+  const tailscaleLog = path.join(tempDir, "tailscale.log");
+  const postboxPath = path.join(tempDir, "pi-postbox-server");
+  const postboxLog = path.join(tempDir, "postbox.log");
+
+  await writeFile(
+    tailscalePath,
+    `#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$TAILSCALE_LOG"
+if [ "$1" = "status" ] && [ "$2" = "--json" ]; then
+  echo '{"Self":{"DNSName":"test-host.tailnet.ts.net.","TailscaleIPs":["100.64.0.1"]}}'
+  exit 0
+fi
+if [ "$1" = "status" ]; then
+  echo 'ok'
+  exit 0
+fi
+if [ "$1" = "serve" ]; then
+  echo 'serve ok'
+  exit 0
+fi
+exit 1
+`,
+    { mode: 0o755 },
+  );
+
+  await writeFile(
+    postboxPath,
+    `#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$POSTBOX_LOG"
+node -e 'const http = require("http");
+const server = http.createServer((req, res) => res.end("ok"));
+server.listen(0, "127.0.0.1", () => {
+  console.log("pi-postbox-server listening on http://127.0.0.1:" + server.address().port);
+  setTimeout(() => server.close(), 2500);
+});'
+`,
+    { mode: 0o755 },
+  );
+
+  try {
+    const child = spawn(process.execPath, [cliPath, "--timeout", "5000", "postbox", "--database", ":memory:"], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        PATH: `${tempDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        TAILSCALE_LOG: tailscaleLog,
+        POSTBOX_LOG: postboxLog,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+
+    const exitCode = await new Promise<number | null>((resolve) => child.on("exit", resolve));
+
+    assert.equal(exitCode, 0, `stdout:\n${stdout}\nstderr:\n${stderr}`);
+    assert.match(stdout, /pi-postbox-server listening on http:\/\/127\.0\.0\.1:\d+/);
+    assert.match(stderr, /lizardtail: detected local server on http:\/\/127\.0\.0\.1:\d+/);
+    assert.match(stderr, /lizardtail: serving via Tailscale: https:\/\/test-host\.tailnet\.ts\.net/);
+
+    const postboxCall = await readFile(postboxLog, "utf8");
+    assert.match(postboxCall, /--host 127\.0\.0\.1 --port 3000 --database :memory:/);
+
+    const tailscaleCalls = await readFile(tailscaleLog, "utf8");
+    assert.match(tailscaleCalls, /serve --bg --https 8443 http:\/\/127\.0\.0\.1:\d+/);
+    assert.match(tailscaleCalls, /serve --https=8443 off/);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
