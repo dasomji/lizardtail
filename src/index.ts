@@ -73,8 +73,8 @@ Options:
   -h, --help           Show this help.
 
 Examples:
-  lizardtail postbox
   lizardtail pnpm dev
+  lizardtail --port 5173 npm run dev
   lizardtail --port 3000 npm run dev
   lizardtail --tailscale-port 8450 pnpm dev
   lizardtail --public pnpm dev
@@ -112,11 +112,15 @@ If a config file exists, its blockedPorts list replaces the built-in default lis
 Run a dev server command, detect its local port, and expose it through Tailscale.
 
 Common usage:
-  lizardtail postbox
   lizardtail pnpm dev
+  lizardtail --port 5173 npm run dev
   lizardtail --port 3000 npm run dev
   lizardtail --tailscale-port 8450 pnpm dev
   lizardtail --public pnpm dev
+
+For an app whose frontend dev server proxies to a backend (e.g. a Vite SPA proxying
+/api), expose the frontend port with --port so its proxied backend is reachable too:
+  lizardtail --port 5173 npm run dev
 
 Private vs public:
   Default: private tailnet-only Tailscale Serve.
@@ -130,9 +134,6 @@ Safety:
 
 Help topics:
   lizardtail help config
-
-Postbox shortcut:
-  lizardtail postbox          Run pi-postbox-server with local defaults, detect its actual port, and expose it.
 
 Other commands:
   lizardtail config init      Write a starter config file.
@@ -285,25 +286,6 @@ export function parseArgs(argv: string[]): Options {
   if (options.command.length === 0) usage();
 
   return options;
-}
-
-function commandArgsIncludeOption(args: string[], name: string): boolean {
-  return args.some((arg) => arg === name || arg.startsWith(`${name}=`));
-}
-
-export function applyPostboxAlias(options: Options): Options {
-  if (options.command[0] !== "postbox") return options;
-
-  const extraArgs = options.command.slice(1);
-  const postboxArgs: string[] = [];
-  if (!commandArgsIncludeOption(extraArgs, "--host")) postboxArgs.push("--host", options.host);
-  if (!commandArgsIncludeOption(extraArgs, "--port")) postboxArgs.push("--port", String(options.port ?? 3000));
-
-  const { port: _preferredPostboxPort, ...detectionOptions } = options;
-  return {
-    ...detectionOptions,
-    command: ["pi-postbox-server", ...postboxArgs, ...extraArgs],
-  };
 }
 
 function parsePort(value: string): number {
@@ -767,9 +749,7 @@ export async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   if (await handleMetaCommand(argv)) return;
 
-  const parsedOptions = parseArgs(argv);
-  const postboxAlias = parsedOptions.command[0] === "postbox";
-  const options = applyPostboxAlias(parsedOptions);
+  const options = parseArgs(argv);
   const config = await loadConfig();
   const [command, ...args] = options.command;
   const tailscaleDnsName = await getTailscaleDnsName().catch(() => undefined);
@@ -899,8 +879,8 @@ export async function main(): Promise<void> {
   });
 
   child.on("error", (error) => {
-    if (postboxAlias && (error as NodeJS.ErrnoException).code === "ENOENT") {
-      console.error("lizardtail: failed to start pi-postbox-server: not found on PATH. Install or link @pi-postbox/server so the pi-postbox-server binary is available.");
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      console.error(`lizardtail: failed to start ${command}: command not found on PATH.`);
     } else {
       console.error(`lizardtail: failed to start ${command}: ${error.message}`);
     }
