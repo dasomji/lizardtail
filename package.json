@@ -1,6 +1,6 @@
 {
   "name": "lizardtail",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A Tailscale Serve wrapper around other commands that detects dev-server ports and prints usable URLs.",
   "type": "module",
   "bin": {

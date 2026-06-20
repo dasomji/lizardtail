@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,6 +24,78 @@ exit 1
 `,
     { mode: 0o755 },
   );
+}
+
+async function writeBasicTailscaleStub(tempDir: string): Promise<string> {
+  await writeHostCommandStubs(tempDir);
+  const tailscalePath = path.join(tempDir, "tailscale");
+  const tailscaleLog = path.join(tempDir, "tailscale.log");
+  await writeFile(
+    tailscalePath,
+    `#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$TAILSCALE_LOG"
+if [ "$1" = "status" ] && [ "$2" = "--json" ]; then
+  echo '{"Self":{"DNSName":"test-host.tailnet.ts.net.","TailscaleIPs":["100.64.0.1"]}}'
+  exit 0
+fi
+if [ "$1" = "status" ]; then
+  echo 'ok'
+  exit 0
+fi
+if { [ "$1" = "serve" ] || [ "$1" = "funnel" ]; } && [ "$2" = "status" ] && [ "$3" = "--json" ]; then
+  echo '{}'
+  exit 0
+fi
+if [ "$1" = "serve" ] || [ "$1" = "funnel" ]; then
+  echo 'ok'
+  exit 0
+fi
+exit 1
+`,
+    { mode: 0o755 },
+  );
+  return tailscaleLog;
+}
+
+async function getFreePort(host = "127.0.0.1"): Promise<number> {
+  return await new Promise<number>((resolve, reject) => {
+    const server = net.createServer();
+    server.once("error", reject);
+    server.listen(0, host, () => {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        reject(new Error("failed to allocate a port"));
+        return;
+      }
+      server.close(() => resolve(address.port));
+    });
+  });
+}
+
+async function waitForText(read: () => string, pattern: RegExp, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (pattern.test(read())) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.match(read(), pattern);
+}
+
+function laravelViteFixtureScript(appPort: number, vitePort: number, closeAfterMs = 3_500): string {
+  return `const http = require("http");
+const app = http.createServer((req, res) => res.end("app"));
+const vite = http.createServer((req, res) => res.end("vite"));
+let ready = 0;
+function onReady() {
+  ready += 1;
+  if (ready !== 2) return;
+  console.log("[vite]   VITE v6.0.0 ready in 299 ms");
+  console.log("[vite]   ➜  Local:   http://localhost:${vitePort}/");
+  console.log("[server]    INFO  Server running on [http://127.0.0.1:${appPort}].");
+  setTimeout(() => { app.close(); vite.close(); }, ${closeAfterMs});
+}
+app.listen(${appPort}, "127.0.0.1", onReady);
+vite.listen(${vitePort}, "127.0.0.1", onReady);`;
 }
 
 test("detectPortFromText finds common dev-server URLs", () => {
@@ -69,6 +142,23 @@ test("detectLaravelViteServers finds both Laravel and Vite ports", () => {
     vitePort: 5174,
     viteHost: "localhost",
   });
+});
+
+test("detectLaravelViteServers handles Vite localhost, IPv4, and IPv6 loopback bindings", () => {
+  for (const [host, expectedHost] of [
+    ["localhost", "localhost"],
+    ["127.0.0.1", "127.0.0.1"],
+    ["[::1]", "localhost"],
+  ] as const) {
+    const output = `[vite]   ➜  Local:   http://${host}:5177/
+[server]    INFO  Server running on [http://127.0.0.1:8002].`;
+
+    assert.deepEqual(detectLaravelViteServers(output), {
+      appPort: 8002,
+      vitePort: 5177,
+      viteHost: expectedHost,
+    });
+  }
 });
 
 test("parseArgs parses options before the command", () => {
@@ -569,3 +659,145 @@ server.listen(0, "127.0.0.1", () => {
   }
 });
 
+
+test("CLI with explicit --port still exposes a simple one-port app once", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "lizardtail-test-"));
+  const tailscaleLog = await writeBasicTailscaleStub(tempDir);
+  const appPort = await getFreePort();
+
+  try {
+    const child = spawn(
+      process.execPath,
+      [
+        cliPath,
+        "--port",
+        String(appPort),
+        "--",
+        process.execPath,
+        "-e",
+        `const http = require("http");
+const server = http.createServer((req, res) => res.end("ok"));
+server.listen(${appPort}, "127.0.0.1", () => {
+  console.log("app ready");
+  setTimeout(() => server.close(), 2500);
+});`,
+      ],
+      {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          PATH: `${tempDir}${path.delimiter}${process.env.PATH ?? ""}`,
+          TAILSCALE_LOG: tailscaleLog,
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+
+    let stderr = "";
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+
+    const exitCode = await new Promise<number | null>((resolve) => child.on("exit", resolve));
+    assert.equal(exitCode, 0, stderr);
+    assert.match(stderr, new RegExp(`lizardtail: detected local server on http://127\\.0\\.0\\.1:${appPort}`));
+    assert.doesNotMatch(stderr, /detected Vite asset server/);
+
+    const calls = await readFile(tailscaleLog, "utf8");
+    assert.match(calls, new RegExp(`serve --bg --https 8443 http://127\\.0\\.0\\.1:${appPort}`));
+    assert.doesNotMatch(calls, /serve --bg --https 8444/);
+    assert.match(calls, /serve --https=8443 off/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("CLI detects Laravel + Vite without --port and exposes both mappings", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "lizardtail-test-"));
+  const tailscaleLog = await writeBasicTailscaleStub(tempDir);
+  const appPort = await getFreePort();
+  const vitePort = await getFreePort();
+  await mkdir(path.join(tempDir, "public"));
+  await writeFile(path.join(tempDir, "public", "hot"), "http://localhost:previous");
+
+  try {
+    const child = spawn(process.execPath, [cliPath, "--timeout", "5000", "--", process.execPath, "-e", laravelViteFixtureScript(appPort, vitePort)], {
+      cwd: tempDir,
+      env: {
+        ...process.env,
+        PATH: `${tempDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        TAILSCALE_LOG: tailscaleLog,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let stderr = "";
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+
+    const exitCode = await new Promise<number | null>((resolve) => child.on("exit", resolve));
+    assert.equal(exitCode, 0, stderr);
+    assert.match(stderr, new RegExp(`detected Laravel app server on http://127\\.0\\.0\\.1:${appPort}`));
+    assert.match(stderr, new RegExp(`detected Vite asset server on http://localhost:${vitePort}`));
+    assert.match(stderr, /serving Laravel via Tailscale: https:\/\/test-host\.tailnet\.ts\.net:8443/);
+    assert.match(stderr, /serving Vite assets via Tailscale: https:\/\/test-host\.tailnet\.ts\.net:8444/);
+
+    const calls = await readFile(tailscaleLog, "utf8");
+    assert.match(calls, new RegExp(`serve --bg --https 8443 http://127\\.0\\.0\\.1:${appPort}`));
+    assert.match(calls, /serve --bg --https 8444 http:\/\/127\.0\.0\.1:\d+/);
+    assert.match(calls, /serve --https=8443 off/);
+    assert.match(calls, /serve --https=8444 off/);
+    assert.equal(await readFile(path.join(tempDir, "public", "hot"), "utf8"), "http://localhost:previous");
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("CLI with explicit --port still detects Laravel + Vite, writes hot file, and cleans up both mappings", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "lizardtail-test-"));
+  const tailscaleLog = await writeBasicTailscaleStub(tempDir);
+  const appPort = await getFreePort();
+  const vitePort = await getFreePort();
+  await mkdir(path.join(tempDir, "public"));
+  await writeFile(path.join(tempDir, "artisan"), "#!/usr/bin/env php\n");
+
+  try {
+    const child = spawn(process.execPath, [cliPath, "--port", String(appPort), "--", process.execPath, "-e", laravelViteFixtureScript(appPort, vitePort, 4_000)], {
+      cwd: tempDir,
+      env: {
+        ...process.env,
+        PATH: `${tempDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        TAILSCALE_LOG: tailscaleLog,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let stderr = "";
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+
+    await waitForText(() => stderr, /wrote Laravel Vite hot file/);
+    assert.equal(await readFile(path.join(tempDir, "public", "hot"), "utf8"), "https://test-host.tailnet.ts.net:8444");
+
+    const exitCode = await new Promise<number | null>((resolve) => child.on("exit", resolve));
+    assert.equal(exitCode, 0, stderr);
+    assert.match(stderr, new RegExp(`detected Laravel app server on http://127\\.0\\.0\\.1:${appPort}`));
+    assert.match(stderr, new RegExp(`detected Vite asset server on http://localhost:${vitePort}`));
+    assert.match(stderr, /restored Laravel Vite hot file/);
+
+    await assert.rejects(readFile(path.join(tempDir, "public", "hot"), "utf8"), /ENOENT/);
+
+    const calls = await readFile(tailscaleLog, "utf8");
+    assert.match(calls, new RegExp(`serve --bg --https 8443 http://127\\.0\\.0\\.1:${appPort}`));
+    assert.match(calls, /serve --bg --https 8444 http:\/\/127\.0\.0\.1:\d+/);
+    assert.match(calls, /serve --https=8443 off/);
+    assert.match(calls, /serve --https=8444 off/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});

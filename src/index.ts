@@ -3,8 +3,9 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, realpathSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
+import type { Server } from "node:http";
 import net from "node:net";
 import path from "node:path";
 import process from "node:process";
@@ -611,16 +612,78 @@ async function chooseTailscaleHttpsPort(excludedPort?: number, config = DEFAULT_
   throw new Error("could not find an available Tailscale HTTPS port");
 }
 
-async function writeLaravelHotFile(viteUrl: string): Promise<string | undefined> {
+interface LaravelHotFileSnapshot {
+  path: string;
+  existed: boolean;
+  previousContent?: string;
+}
+
+interface LaravelHotFileState extends LaravelHotFileSnapshot {
+  generatedContent: string;
+}
+
+function looksLikeLaravelProject(cwd = process.cwd()): boolean {
+  return existsSync(path.join(cwd, "artisan")) && existsSync(path.join(cwd, "public"));
+}
+
+function resolveLaravelViteSetup(text: string, explicitAppPort?: number, cwd = process.cwd()): Required<LaravelViteDetection> | undefined {
+  const detection = detectLaravelViteServers(text);
+  const appPort = detection.appPort ?? (explicitAppPort && detection.vitePort && looksLikeLaravelProject(cwd) ? explicitAppPort : undefined);
+  if (!appPort || !detection.vitePort) return undefined;
+
+  return {
+    appPort,
+    vitePort: detection.vitePort,
+    viteHost: detection.viteHost ?? "localhost",
+  };
+}
+
+async function snapshotLaravelHotFile(): Promise<LaravelHotFileSnapshot | undefined> {
   const publicDir = path.join(process.cwd(), "public");
   if (!existsSync(publicDir)) return undefined;
 
   const hotPath = path.join(publicDir, "hot");
-  await writeFile(hotPath, viteUrl);
-  return hotPath;
+  try {
+    return { path: hotPath, existed: true, previousContent: await readFile(hotPath, "utf8") };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return { path: hotPath, existed: false };
+  }
 }
 
-async function startCorsProxy(targetHost: string, targetPort: number): Promise<{ host: string; port: number }> {
+async function writeLaravelHotFile(viteUrl: string, snapshot?: LaravelHotFileSnapshot): Promise<LaravelHotFileState | undefined> {
+  const state = snapshot ?? (await snapshotLaravelHotFile());
+  if (!state) return undefined;
+
+  await writeFile(state.path, viteUrl);
+  return { ...state, generatedContent: viteUrl };
+}
+
+async function restoreLaravelHotFile(state: LaravelHotFileState): Promise<void> {
+  let currentContent: string | undefined;
+  try {
+    currentContent = await readFile(state.path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+
+  if (currentContent !== state.generatedContent) {
+    console.error(`lizardtail: leaving Laravel Vite hot file unchanged because it was modified after lizardtail wrote it: ${state.path}`);
+    return;
+  }
+
+  if (state.existed) await writeFile(state.path, state.previousContent ?? "");
+  else await rm(state.path, { force: true });
+}
+
+interface CorsProxy {
+  host: string;
+  port: number;
+  server: Server;
+}
+
+async function startCorsProxy(targetHost: string, targetPort: number): Promise<CorsProxy> {
   const server = createServer((incoming, response) => {
     if (incoming.method === "OPTIONS") {
       response.writeHead(204, corsHeaders());
@@ -656,7 +719,7 @@ async function startCorsProxy(targetHost: string, targetPort: number): Promise<{
   server.on("upgrade", (request, socket, head) => {
     const upstream = net.connect(targetPort, targetHost, () => {
       upstream.write(`${request.method ?? "GET"} ${request.url ?? "/"} HTTP/${request.httpVersion}\r\n`);
-      for (const [name, value] of Object.entries(request.headers)) {
+      for (const [name, value] of Object.entries({ ...request.headers, host: `${targetHost}:${targetPort}` })) {
         if (value === undefined) continue;
         upstream.write(`${name}: ${Array.isArray(value) ? value.join(",") : value}\r\n`);
       }
@@ -679,7 +742,7 @@ async function startCorsProxy(targetHost: string, targetPort: number): Promise<{
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("failed to start Vite CORS proxy");
 
-  return { host: "127.0.0.1", port: address.port };
+  return { host: "127.0.0.1", port: address.port, server };
 }
 
 function corsHeaders(): Record<string, string> {
@@ -687,6 +750,7 @@ function corsHeaders(): Record<string, string> {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "*",
+    "Access-Control-Allow-Private-Network": "true",
   };
 }
 
@@ -761,16 +825,22 @@ export async function main(): Promise<void> {
       : tailscaleDnsName;
   }
 
+  const initialLaravelHotFileSnapshot = await snapshotLaravelHotFile();
+
   const child = spawn(command, args, {
     stdio: ["inherit", "pipe", "pipe"],
     env: childEnv,
+    detached: process.platform !== "win32",
   });
 
   let exposed = false;
   let exposing: Promise<void> | undefined;
   let recentOutput = "";
   let detectionTimer: NodeJS.Timeout | undefined;
+  let explicitPortFallbackTimer: NodeJS.Timeout | undefined;
   const createdTailscalePorts = new Map<number, ExposureMode>();
+  const localProxies: Server[] = [];
+  let laravelHotFileState: LaravelHotFileState | undefined;
 
   const cleanupTailscaleServe = async () => {
     for (const [port, mode] of createdTailscalePorts) {
@@ -784,12 +854,60 @@ export async function main(): Promise<void> {
     createdTailscalePorts.clear();
   };
 
+  const cleanupLaravelHotFile = async () => {
+    if (!laravelHotFileState) return;
+
+    try {
+      await restoreLaravelHotFile(laravelHotFileState);
+      console.error(`lizardtail: restored Laravel Vite hot file: ${laravelHotFileState.path}`);
+    } catch (error) {
+      console.error(`lizardtail: failed to restore Laravel Vite hot file ${laravelHotFileState.path}: ${errorMessage(error)}`);
+    } finally {
+      laravelHotFileState = undefined;
+    }
+  };
+
+  const cleanupLocalProxies = async () => {
+    await Promise.all(
+      localProxies.splice(0).map(
+        (server) =>
+          new Promise<void>((resolve) => {
+            server.close(() => resolve());
+          }),
+      ),
+    );
+  };
+
+  const signalChild = (signal: NodeJS.Signals | "SIGKILL") => {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+
+    if (process.platform !== "win32" && child.pid) {
+      try {
+        process.kill(-child.pid, signal);
+        return;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+        return;
+      }
+    }
+
+    if (!child.killed) child.kill(signal);
+  };
+
   const stopChild = () => {
-    if (!child.killed) child.kill("SIGTERM");
+    signalChild("SIGTERM");
+  };
+
+  const clearDetectionTimers = () => {
+    if (detectionTimer) clearTimeout(detectionTimer);
+    if (explicitPortFallbackTimer) clearTimeout(explicitPortFallbackTimer);
+    detectionTimer = undefined;
+    explicitPortFallbackTimer = undefined;
   };
 
   const expose = (port: number) => {
     if (exposed || exposing) return;
+    clearDetectionTimers();
     exposed = true;
     exposing = (async () => {
       const localUrl = `http://${options.host}:${port}`;
@@ -810,6 +928,7 @@ export async function main(): Promise<void> {
 
   const exposeLaravelVite = (appPort: number, vitePort: number, viteHost: string) => {
     if (exposed || exposing) return;
+    clearDetectionTimers();
     exposed = true;
     exposing = (async () => {
       const appLocalUrl = `http://${options.host}:${appPort}`;
@@ -827,15 +946,16 @@ export async function main(): Promise<void> {
       const appExposure = await exposeWithTailscaleDetailed(options.host, appPort, options.tailscalePort, options.public, config);
       createdTailscalePorts.set(appExposure.httpsPort, appExposure.mode);
       const viteProxy = await startCorsProxy(viteHost, vitePort);
+      localProxies.push(viteProxy.server);
       const viteTailscalePort = options.viteTailscalePort ?? (await chooseTailscaleHttpsPort(appExposure.httpsPort, config));
       const viteExposure = await exposeWithTailscaleDetailed(viteProxy.host, viteProxy.port, viteTailscalePort, options.public, config);
       createdTailscalePorts.set(viteExposure.httpsPort, viteExposure.mode);
-      const hotPath = await writeLaravelHotFile(viteExposure.url);
+      laravelHotFileState = await writeLaravelHotFile(viteExposure.url, initialLaravelHotFileSnapshot);
 
       console.error(`lizardtail: serving Laravel via Tailscale: ${appExposure.url}`);
       console.error(`lizardtail: serving Vite assets via Tailscale: ${viteExposure.url}`);
       console.error(`lizardtail: proxying Vite through local CORS proxy: http://${viteProxy.host}:${viteProxy.port} -> ${viteLocalUrl}`);
-      if (hotPath) console.error(`lizardtail: wrote Laravel Vite hot file: ${hotPath}`);
+      if (laravelHotFileState) console.error(`lizardtail: wrote Laravel Vite hot file: ${laravelHotFileState.path}`);
       console.error(`lizardtail: cleanup command: tailscale ${appExposure.mode} --https=${appExposure.httpsPort} off`);
       console.error(`lizardtail: cleanup command: tailscale ${viteExposure.mode} --https=${viteExposure.httpsPort} off`);
       console.error("");
@@ -851,15 +971,25 @@ export async function main(): Promise<void> {
 
   const inspectChunk = (chunk: string) => {
     recentOutput = (recentOutput + chunk).slice(-8_000);
+    if (exposed || exposing) return;
+
+    const laravelVite = resolveLaravelViteSetup(recentOutput, options.port);
+    if (laravelVite) {
+      exposeLaravelVite(laravelVite.appPort, laravelVite.vitePort, laravelVite.viteHost);
+      return;
+    }
+
+    if (options.port) return;
+
     const detectedPort = detectPortFromText(recentOutput);
-    if (!detectedPort || exposed || exposing) return;
+    if (!detectedPort) return;
 
     if (detectionTimer) clearTimeout(detectionTimer);
     detectionTimer = setTimeout(() => {
       detectionTimer = undefined;
-      const laravelVite = detectLaravelViteServers(recentOutput);
-      if (laravelVite.appPort && laravelVite.vitePort) {
-        exposeLaravelVite(laravelVite.appPort, laravelVite.vitePort, laravelVite.viteHost ?? "localhost");
+      const settledLaravelVite = resolveLaravelViteSetup(recentOutput);
+      if (settledLaravelVite) {
+        exposeLaravelVite(settledLaravelVite.appPort, settledLaravelVite.vitePort, settledLaravelVite.viteHost);
         return;
       }
 
@@ -870,12 +1000,12 @@ export async function main(): Promise<void> {
 
   child.stdout.on("data", (chunk: string) => {
     process.stdout.write(chunk);
-    if (!options.port) inspectChunk(chunk);
+    inspectChunk(chunk);
   });
 
   child.stderr.on("data", (chunk: string) => {
     process.stderr.write(chunk);
-    if (!options.port) inspectChunk(chunk);
+    inspectChunk(chunk);
   });
 
   child.on("error", (error) => {
@@ -887,7 +1017,14 @@ export async function main(): Promise<void> {
     process.exit(1);
   });
 
-  if (options.port) expose(options.port);
+  if (options.port) {
+    explicitPortFallbackTimer = setTimeout(() => {
+      explicitPortFallbackTimer = undefined;
+      const laravelVite = resolveLaravelViteSetup(recentOutput, options.port);
+      if (laravelVite) exposeLaravelVite(laravelVite.appPort, laravelVite.vitePort, laravelVite.viteHost);
+      else expose(options.port!);
+    }, Math.min(DETECTION_SETTLE_MS, options.timeoutMs));
+  }
 
   const timeout = options.port
     ? undefined
@@ -899,16 +1036,23 @@ export async function main(): Promise<void> {
         }
       }, options.timeoutMs);
 
+  let forceKillTimer: NodeJS.Timeout | undefined;
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.once(signal, () => {
-      child.kill(signal);
+      signalChild(signal);
+      forceKillTimer = setTimeout(() => {
+        signalChild("SIGKILL");
+      }, 5_000);
     });
   }
 
   const [code, signal] = (await once(child, "exit")) as [number | null, NodeJS.Signals | null];
+  if (forceKillTimer) clearTimeout(forceKillTimer);
   if (timeout) clearTimeout(timeout);
-  if (detectionTimer) clearTimeout(detectionTimer);
+  clearDetectionTimers();
   if (exposing) await exposing;
+  await cleanupLaravelHotFile();
+  await cleanupLocalProxies();
   await cleanupTailscaleServe();
 
   if (signal) process.kill(process.pid, signal);

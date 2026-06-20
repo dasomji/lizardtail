@@ -207,11 +207,13 @@ lizardtail --vite-tailscale-port 8453 composer run dev
 
 `lizardtail` also sets `__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS` for the child command when it can read your Tailscale MagicDNS name. The local proxy handles CORS for module scripts loaded from the Vite Tailscale URL.
 
-If your app server lands on a known port and you only want to expose that server, you can force it:
+If your app server lands on a known port, pass it with `--port`. Lizard Tail treats that as the main app port, but still watches briefly for companion services such as Vite and exposes them when detected:
 
 ```bash
 lizardtail --port 8001 composer run dev
 ```
+
+If no companion service appears during the short settle window, it falls back to exposing only the explicit port.
 
 ### Public internet sharing
 
@@ -287,10 +289,11 @@ lizardtail --timeout 60000 pnpm dev
 
 1. `lizardtail` starts the command you provide.
 2. It streams the command output to your terminal.
-3. It scans recent output for a local port.
-4. Once it finds a port, it waits for `127.0.0.1:<port>` or the configured `--host` to accept connections.
-5. It chooses the first free Tailscale HTTPS port from `8443` upward, unless `--tailscale-port` was provided. Ports in the configured blocked-port list are refused or skipped.
-6. It runs Tailscale Serve for private tailnet-only access:
+3. It scans recent output for local ports and known multi-service setups.
+4. With `--port`, it treats that port as the known main app port but still waits briefly for companion-service output before falling back to a single-port exposure.
+5. Once it chooses what to expose, it waits for `127.0.0.1:<port>` or the configured `--host` to accept connections.
+6. It chooses the first free Tailscale HTTPS port from `8443` upward, unless `--tailscale-port` was provided. Ports in the configured blocked-port list are refused or skipped.
+7. It runs Tailscale Serve for private tailnet-only access:
 
    ```bash
    tailscale serve --bg --https <tailscale-port> http://<host>:<port>
@@ -304,7 +307,7 @@ lizardtail --timeout 60000 pnpm dev
 
    On older Tailscale versions, if that form fails for `127.0.0.1`/`localhost`, it falls back to the same command with just `<port>` as the target.
 
-7. It reads `tailscale status --json`, extracts the current device's MagicDNS name, and prints:
+8. It reads `tailscale status --json`, extracts the current device's MagicDNS name, and prints:
 
    ```text
    https://<device-name>.<tailnet>.ts.net:<tailscale-port>
@@ -320,7 +323,9 @@ tailscale serve --https=<port> off
 tailscale funnel --https=<port> off
 ```
 
-It only tracks ports created by the current `lizardtail` process.
+For Laravel + Vite, it also closes the local Vite proxy and restores `public/hot` to the exact content seen before Lizard Tail rewrote it. If there was no previous `public/hot`, it removes the generated file. If another process changes the file after Lizard Tail writes it, Lizard Tail leaves that newer content in place and warns instead of clobbering it.
+
+It only tracks ports and files created or modified by the current `lizardtail` process.
 
 ## Troubleshooting
 
