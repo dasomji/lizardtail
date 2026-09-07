@@ -70,3 +70,26 @@ App supervisors survive agent exit and logout, but require `lizardtail up` after
 a host reboot. Gateway socket reservations persist. The bootstrap Tailscale API
 token requires renewal; optional OAuth client credentials are supported but were
 not provisioned or tested against a real OAuth client in this rollout.
+
+## Post-merge verification
+
+The implementation and project documentation were submitted as separate PRs:
+Lizardtail #1, pi-daniel-skills #16, better-usc #33, t5-laravel #25,
+me-tracker #28, BuDoBase #201 and audionautiq-web #262. Follow-up review and
+cleanup records are kept privately under `~/.local/state/lizardtail/finish-rollout/`.
+The earlier uncommitted-state paragraph describes the initial rollout snapshot.
+
+The actual Better USC cleanup found that the old local main had diverged from
+GitHub main. Its original commit was preserved on
+`backup/lizardtail-main-before-sync-20260907` before creating main from GitHub.
+The database had applied two older migrations whose combined SQL statements were
+verified identical to the canonical MCP migration. After a private full dump and
+checking all existing migration hashes, the missing profile-place column rename
+was applied and only that local migration journal was reconciled. User, account
+and activity row counts remained unchanged. Canonical subsequent migrations then
+succeeded, main health returned 200 and feature cleanup completed.
+
+`finish` now checks fast-forward ancestry before stopping main. The real
+Git/systemd smoke test verifies that divergence leaves the existing supervisor PID
+and feature data intact. This avoids an unnecessary preview outage when Git state
+cannot be advanced safely.
