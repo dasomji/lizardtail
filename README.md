@@ -1,5 +1,11 @@
 # lizardtail
 
+For persistent multi-service previews and parallel worktrees, use the new
+[managed workflow](docs/managed.md) and [project manifest](docs/managed-config.md):
+`lizardtail plan`, `lizardtail up`, `lizardtail down`. It provides stable URLs,
+explicit service ownership, rootless PostgreSQL/S3 instances and merge cleanup.
+The command-wrapper documentation below describes the retained legacy mode.
+
 Lizardtail is a Tailscale Serve wrapper around other commands. It runs a command, watches its output for a localhost server port, exposes that port with [Tailscale Serve](https://tailscale.com/kb/1242/tailscale-serve), and prints the private tailnet URL. Pass `--public` to use Tailscale Funnel intentionally.
 
 ```bash

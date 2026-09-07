@@ -56,7 +56,16 @@ const DEFAULT_CONFIG: LizardtailConfig = {
 };
 
 export function printUsage(): void {
-  console.error(`Usage: lizardtail [options] -- <command> [args...]
+  console.error(`Managed previews (lizardtail.project.json, Node.js 22+, systemd user):
+  lizardtail init | plan | up | down | status | logs | doctor | refresh
+  lizardtail db import --source-env-file FILE | db migrate
+  lizardtail exec -- COMMAND ARG...
+  lizardtail finish --pr NUMBER
+  Options: --instance NAME, --project-dir PATH, --json
+  Main is explicitly registered with --instance main; feature identities are automatic.
+  See docs/managed.md and docs/managed-config.md for setup and data lifecycle.
+
+Legacy wrapper usage: lizardtail [options] -- <command> [args...]
        lizardtail [options] <command> [args...]
        lizardtail help [topic]
        lizardtail config init
@@ -811,6 +820,8 @@ async function removeTailscaleExposurePort(port: number, mode: ExposureMode): Pr
 
 export async function main(): Promise<void> {
   const argv = process.argv.slice(2);
+  const { managed } = await import("./managed/cli.js");
+  if (await managed(argv)) return;
   if (await handleMetaCommand(argv)) return;
 
   const options = parseArgs(argv);
