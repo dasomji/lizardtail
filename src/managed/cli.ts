@@ -367,6 +367,13 @@ async function finish(p: Plan, pr: string) {
     ["merge-base", "--is-ancestor", meta.mergeCommit.oid, target],
     { cwd: main.root },
   );
+  try {
+    await run("git", ["merge-base", "--is-ancestor", "HEAD", target], {
+      cwd: main.root,
+    });
+  } catch {
+    throw Error("Main history cannot fast-forward; keeping its preview running");
+  }
   await down(main);
   await run("git", ["merge", "--ff-only", target], { cwd: main.root });
   const updated = await plan(main.root, "main");
