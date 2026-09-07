@@ -1,7 +1,7 @@
 {
   "name": "lizardtail",
-  "version": "0.1.1",
-  "description": "A Tailscale Serve wrapper around other commands that detects dev-server ports and prints usable URLs.",
+  "version": "0.2.0",
+  "description": "Managed worktree dev services, isolated local data and stable private Tailscale previews.",
   "type": "module",
   "bin": {
     "lizardtail": "dist/index.js"
@@ -9,6 +9,8 @@
   "files": [
     "dist",
     "README.md",
+    "docs",
+    "scripts/host-setup.sh",
     "LICENSE"
   ],
   "scripts": {
@@ -28,10 +30,11 @@
   ],
   "license": "MIT",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
+    "prettier": "^3.9.6",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   },
@@ -42,5 +45,9 @@
   },
   "bugs": {
     "url": "https://github.com/dasomji/lizardtail/issues"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1127.0",
+    "@aws-sdk/s3-request-presigner": "^3.1127.0"
   }
 }
