@@ -43,10 +43,10 @@ kitchen `research/31-migration-dry-run-lizardtail.md` (dry run 2026-11-04 at
 
 ## Chunks
 
-| #   | Outcome                                                                                                                                                                                                                                | Owned files                                                                                                                                                                                                                                                                  | Depends on                                 | Status   |
-| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ | -------- |
-| A   | Contracts & knowledge: lean `AGENTS.md`, `CLAUDE.md`, `GLOSSARY.md`, ADRs extracted from the two dated docs, out-of-scope records, `docs/agents/development.md` + `doors.md`, README Node 22+ fix and links, retire the two dated docs | `AGENTS.md`, `CLAUDE.md`, `GLOSSARY.md`, `docs/adr/**`, `docs/out-of-scope/**`, `docs/agents/development.md`, `docs/agents/doors.md`, `README.md`, `docs/managed*.md` (links only), dated docs (delete)                                                                      | —                                          | complete |
-| B   | Verification contract: `lint`, `check:fast`, `check:full`, `verify:app`, pre-commit hook + installer, CI on `check:full`, npm `files` narrowing, formatting cleanup, `docs/agents/verify.md`                                           | `package.json`, `package-lock.json` (only if deps change), `scripts/check-*.mjs`, `scripts/verify-app.mjs`, `scripts/install-hooks.mjs`, `.githooks/**`, `.prettierignore`, `.gitignore`, `.github/workflows/test.yml`, `docs/agents/verify.md`, format-only edits elsewhere | A committed (formatting touches A's files) | todo     |
+| #   | Outcome                                                                                                                                                                                                                                | Owned files                                                                                                                                                                                                                                                                  | Depends on                                 | Status       |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ | ------------ |
+| A   | Contracts & knowledge: lean `AGENTS.md`, `CLAUDE.md`, `GLOSSARY.md`, ADRs extracted from the two dated docs, out-of-scope records, `docs/agents/development.md` + `doors.md`, README Node 22+ fix and links, retire the two dated docs | `AGENTS.md`, `CLAUDE.md`, `GLOSSARY.md`, `docs/adr/**`, `docs/out-of-scope/**`, `docs/agents/development.md`, `docs/agents/doors.md`, `README.md`, `docs/managed*.md` (links only), dated docs (delete)                                                                      | —                                          | complete     |
+| B   | Verification contract: `lint`, `check:fast`, `check:full`, `verify:app`, pre-commit hook + installer, CI on `check:full`, npm `files` narrowing, formatting cleanup, `docs/agents/verify.md`                                           | `package.json`, `package-lock.json` (only if deps change), `scripts/check-*.mjs`, `scripts/verify-app.mjs`, `scripts/install-hooks.mjs`, `.githooks/**`, `.prettierignore`, `.gitignore`, `.github/workflows/test.yml`, `docs/agents/verify.md`, format-only edits elsewhere | A committed (formatting touches A's files) | verification |
 
 One implementer owns both chunks sequentially (shared files: formatting).
 Then: L2 → verifier L3 on Coolify → one cross-family L4 → delete this
@@ -95,3 +95,25 @@ directory → file-pr.
 - L0: Node 22.22.2, npm ci/build and typecheck passed. Initial L1 is blocked
   until B delivers its contract; A is the required documentation bootstrap commit.
   Prettier range-ignore markers preserve the required Plane block's exact bytes.
+
+- B scope clarification: smoke-managed.py and smoke-finish.py previously suppressed
+  cleanup failures. They now attempt all fixture cleanup and fail on errors;
+  smoke-resources attempts cleanup for every captured plan. This is necessary to
+  satisfy the signed cleanup-failure contract and changes no product runtime.
+- First dirty-tree L3 diagnostic: prerequisites, managed lifecycle and socket bridge
+  passed; resources failed with PostgreSQL shutting down immediately after initial
+  readiness. resources.ts uses socket pg_isready, which can accept the image's
+  temporary initialization server. Orchestrator follow-up acceptance: readiness
+  must wait for the final PostgreSQL server and repeated fresh-volume clone smokes
+  must pass. No runtime fix in this layout/tooling scope. Disposable cleanup passed.
+  The runner now attempts all four journeys and returns failure if any fail.
+
+- B tooling L0: all eight public-seam tests passed (41.6 s under concurrent host
+  smoke load); red states were observed for missing fast/hook/CLI/preflight
+  contracts and unsupported-only staging before implementation. Lint passed.
+  npm pack --dry-run ships 14 files, with exactly the two maintained operator
+  guides and no new agent/ADR/out-of-scope/work/account-example docs.
+- Hook installer enabled clone-wide core.hooksPath=.githooks and warned about
+  three worktrees without the hook (including main); none of those trees changed.
+  Unknown/shared staged paths select all tests; a no-diff manual run checks the
+  whole index. Full/CI never invoke host smokes.

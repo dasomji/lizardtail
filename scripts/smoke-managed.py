@@ -28,6 +28,8 @@ with tempfile.TemporaryDirectory(prefix='lt-smoke-') as td:
   resumed=cli('up','--instance','one');assert resumed['urls']==a['urls'];assert get(a['urls']['app'])=='web:one'
   print('PASS: two independent instances, API routing, idempotent up, independent stop, stable resume')
  finally:
+  errors=[]
   for n in ['one','two']:
    try:cli('down','--instance',n)
-   except Exception as e:print('Cleanup:',e)
+   except Exception as e:errors.append(str(e))
+  if errors:raise RuntimeError('Cleanup: '+'; '.join(errors))

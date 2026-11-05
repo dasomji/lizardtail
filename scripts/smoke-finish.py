@@ -36,4 +36,8 @@ with tempfile.TemporaryDirectory(prefix='lt-finish-') as td:
   c=sqlite3.connect(pathlib.Path(mp['dir'])/'database.sqlite');assert c.execute('SELECT value FROM sample').fetchone()[0]=='main-data';c.close();assert cli(['up'],feature,'feature',False).returncode!=0
   print('PASS: divergent main keeps preview running; unmerged cleanup refused, failed main migration preserves feature data + backup, merged cleanup removes feature only, main rows retained, finished instance cannot restart')
  finally:
-  for root,instance in [(feature,'feature'),(main,'main')]:cli(['down'],root,instance,False)
+  errors=[]
+  for root,instance in [(feature,'feature'),(main,'main')]:
+   result=cli(['down'],root,instance,False)
+   if result.returncode:errors.append(result.stderr+result.stdout)
+  if errors:raise RuntimeError('Cleanup: '+'; '.join(errors))

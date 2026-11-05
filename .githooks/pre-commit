@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+cd -- "$(git rev-parse --show-toplevel)"
+# Bootstrap the npm command and runner from staged bytes, even when either has
+# unstaged edits. npm preserves this checkout in INIT_CWD with --prefix.
+bootstrap=$(mktemp -d "${TMPDIR:-/tmp}/lt-hook-XXXXXX")
+trap 'rm -rf -- "$bootstrap"' EXIT HUP INT TERM
+mkdir "$bootstrap/scripts"
+git show :package.json > "$bootstrap/package.json"
+git show :scripts/check-fast.mjs > "$bootstrap/scripts/check-fast.mjs"
+npm --prefix "$bootstrap" run check:fast

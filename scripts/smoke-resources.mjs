@@ -196,9 +196,23 @@ try {
   );
 } finally {
   for (const c of clients) c.destroy();
+  const errors = [];
   for (const p of plans.reverse()) {
-    await down(p);
-    await stopResources(p, true);
+    try {
+      await down(p);
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      await stopResources(p, true);
+    } catch (error) {
+      errors.push(error);
+    }
   }
+  if (errors.length)
+    throw new AggregateError(
+      errors,
+      `Cleanup failed; fixture retained at ${root}`,
+    );
   await rm(root, { recursive: true, force: true });
 }

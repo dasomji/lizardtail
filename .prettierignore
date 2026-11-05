@@ -1,0 +1,7 @@
+node_modules/
+dist/
+coverage/
+vendor/
+evidence/
+.kitchen/
+package-lock.json
