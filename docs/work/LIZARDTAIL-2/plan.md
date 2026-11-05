@@ -155,3 +155,27 @@ directory → file-pr.
   GitHub agent-guide links from every shipped guide. No src/** changes, live L3,
   push, PR, Plane/GitHub mutation or main-checkout edit. Known issue:
   [LIZARDTAIL-3](https://plane.audiopoesis.com/personal/projects/54fef1b5-7af9-47c5-9ae2-4377568a3d1f/work-items/4c9a8af9-4631-4abf-b476-51f50dff0d39).
+
+- L4 round 2: verified A–D and the tooling-row omission; fixed all, none skipped.
+  A: both Node smokes share one signal/finally cleanup promise and exit nonzero
+  after SIGINT/SIGTERM. Four executable-boundary regressions were red against
+  the old smokes (signal exit without cleanup), then green, including repeated
+  signals and concurrent finally. A real Coolify SIGINT cleanup of two PostgreSQL
+  and two S3 containers, four bridges and two supervisors took 7.93 s (7.942 s
+  signal-to-exit); grace is now 120 s per escalation stage, allowing margin for
+  four serial 10 s Docker stop deadlines and user units. Only owned fixtures were
+  removed. B: removed pre-staging in both Git temporary-index commit cases. A
+  scratch hook forced to read `.git/index` passed the old tests; both corrected
+  tests fail that mutant (bad commits succeed) and pass the real hook. C: a
+  diagnostic must stream before the test releases a sentinel-blocked grandchild;
+  a scratch buffered runner passed the old test and times out/fails the new one,
+  while the real runner passes. Neither mutant entered the index. D: both Python
+  harnesses attach cleanup failures as exception notes while leaving the journey
+  exception primary; the new assertions were red then green. The finish harness
+  uses separate main-head and journey-error names. Python 3.11+ is documented for
+  exception notes; the L0 row now lists all three tooling test files. E remains
+  accepted as-is: post-SIGKILL close-wait and duplicated stderr in failure messages
+  are pre-existing and unchanged. Final-head L1/L2/L3 outcomes and sanitized
+  before/after resource snapshots belong in `.kitchen/` receipts and uploaded
+  evidence; LIZARDTAIL-3 remains outside this ticket. No `src/**` changes, push,
+  PR, Plane/GitHub operation or main-checkout edit.

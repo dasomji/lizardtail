@@ -10,7 +10,8 @@ export async function command(
     env = process.env,
     preflight = false,
     timeout = preflight ? 30000 : 900000,
-    grace = 10000,
+    // Four containers can each consume a 10s stop deadline, plus user-unit teardown.
+    grace = 120000,
   } = {},
 ) {
   const child = spawn(cmd, args, {

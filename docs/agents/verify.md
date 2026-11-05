@@ -5,13 +5,13 @@ or application database of its own. L2/CI builds it, tests its public commands a
 refuses an invalid manifest. Real fixture database migration and supervised boot
 belong to L3 on Coolify, never GitHub CI.
 
-| Rung              | Invocation                                                                                                                                                   | Coverage and budget                                                                                                                     |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
-| L0 · edit         | `npm run typecheck`; `npm run build && npx tsx --test tests/index.test.ts` (wrapper), `tests/managed.test.ts` (managed), or `tests/checks.test.ts` (tooling) | Focus the touched seam; build before tests that use `dist`.                                                                             |
-| L1 · commit       | `npm run hooks:install` once; then normal `git commit`. Explicit rerun: `.githooks/pre-commit` or `npm run check:fast`                                       | Staged format, typecheck, build, related tests. Aim below 60 s. Duration is printed per run.                                            |
-| L2 · review entry | `npm run check:full`                                                                                                                                         | Build, tracked-file Prettier check, every test, CLI `--help` success and invalid-manifest refusal. Budget 90 s on Coolify.              |
-| L3 · functional   | `npm run verify:app`                                                                                                                                         | Build this checkout and all four disposable host journeys below. Allow 15 minutes per journey; prerequisite probes time out after 30 s. |
-| L5 · CI           | GitHub Actions job `test`, running `npm ci` then `npm run check:full`                                                                                        | Ubuntu/Node 22, same L2 command. Never invokes L3. Observe the actual PR check; local results do not imply CI passed.                   |
+| Rung              | Invocation                                                                                                                                                                                                                     | Coverage and budget                                                                                                                     |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
+| L0 · edit         | `npm run typecheck`; `npm run build && npx tsx --test tests/index.test.ts` (wrapper), `tests/managed.test.ts` (managed), or `tests/checks.test.ts`, `tests/verify-command.test.ts` and `tests/smoke-cleanup.test.ts` (tooling) | Focus the touched seam; build before tests that use `dist`.                                                                             |
+| L1 · commit       | `npm run hooks:install` once; then normal `git commit`. Explicit rerun: `.githooks/pre-commit` or `npm run check:fast`                                                                                                         | Staged format, typecheck, build, related tests. Aim below 60 s. Duration is printed per run.                                            |
+| L2 · review entry | `npm run check:full`                                                                                                                                                                                                           | Build, tracked-file Prettier check, every test, CLI `--help` success and invalid-manifest refusal. Budget 90 s on Coolify.              |
+| L3 · functional   | `npm run verify:app`                                                                                                                                                                                                           | Build this checkout and all four disposable host journeys below. Allow 15 minutes per journey; prerequisite probes time out after 30 s. |
+| L5 · CI           | GitHub Actions job `test`, running `npm ci` then `npm run check:full`                                                                                                                                                          | Ubuntu/Node 22, same L2 command. Never invokes L3. Observe the actual PR check; local results do not imply CI passed.                   |
 
 `npm run lint` checks tracked supported first-party files with Prettier. Generated
 lockfile, `dist`, dependencies, coverage, vendor and local evidence are excluded;
@@ -68,7 +68,7 @@ configuration. Installation is explicit; `prepare` continues to build only.
 ## Coolify functional prerequisites and journeys
 
 Run L3 only on the provisioned Coolify Linux host. The runner refuses CI and
-preflights executable `~/.local/bin/caddy`, Python 3, `flock`, `ss`, `curl`,
+preflights executable `~/.local/bin/caddy`, Python 3.11+ (exception notes), `flock`, `ss`, `curl`,
 `/usr/lib/systemd/systemd-socket-proxyd`, a reachable `systemctl --user` manager,
 a successful disposable `systemd-run --user` command, and Docker context `rootless`
 with actual rootless security options. The PostgreSQL and SeaweedFS image digests
@@ -96,10 +96,16 @@ and isolated port ranges. Only their recorded/labeled resources are cleaned.
 Cleanup failure fails the rung; the runner reports suppressed cleanup errors as
 failures too. It attempts later journeys after an earlier journey fails, then exits
 nonzero if any failed. Journey stdout/stderr stream as they arrive. A 15-minute
-timeout sends SIGINT, allows 10 seconds for cleanup, then escalates to SIGTERM
-and, after another 10 seconds, SIGKILL. Fixtures may be retained if cleanup did
-not complete; inspect only the fixture’s recorded resources. Never reset global
-Serve or prune Docker to repair a smoke.
+timeout sends SIGINT, allows 120 seconds for cleanup, then escalates to SIGTERM
+and, after another 120 seconds, SIGKILL. Both Node smokes use the same cleanup
+promise for SIGINT, SIGTERM and `finally`; repeated signals cannot run cleanup
+twice, and an interrupted smoke exits nonzero. Cleanup duration is printed.
+A Coolify SIGINT teardown measured 7.93 seconds for two PostgreSQL containers,
+two S3 containers, four bridges and two supervisors. The 120-second grace leaves
+margin for four serialized 10-second Docker stop deadlines and user-unit teardown;
+it is a bounded grace, not a guarantee for an unresponsive host. Fixtures may be
+retained if cleanup did not complete; inspect only the fixture’s recorded
+resources. Never reset global Serve or prune Docker to repair a smoke.
 
 Exposure `none` and local HTTP/Host-header checks prove host routing and failure
 behavior, not client ACLs or tailnet reachability. This host may not hairpin to

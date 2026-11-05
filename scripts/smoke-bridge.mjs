@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { smokeCleanup } from "./smoke-cleanup.mjs";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -16,6 +17,12 @@ const b = {
   socket: path.join(root, "app.sock"),
 };
 const server = http.createServer((q, r) => r.end("owned-gateway"));
+const cleanup = smokeCleanup(async () => {
+  server.closeAllConnections();
+  server.close();
+  await stopBridges([b]);
+  await rm(root, { recursive: true, force: true });
+});
 try {
   await new Promise((r) => server.listen(b.socket, r));
   await startBridge(b);
@@ -44,8 +51,5 @@ try {
     "PASS: socket proxy routes correctly, reserves port after upstream crash, releases only on cleanup",
   );
 } finally {
-  server.closeAllConnections();
-  server.close();
-  await stopBridges([b]);
-  await rm(root, { recursive: true, force: true });
+  await cleanup();
 }

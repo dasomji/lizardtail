@@ -6,7 +6,7 @@ state. Do not start or refresh real product previews to test changes here.
 
 ## Setup
 
-Use Node.js 22+ and `npm ci` (the prepare script builds the CLI). Python 3 is
+Use Node.js 22+ and `npm ci` (the prepare script builds the CLI). Python 3.11+ is
 needed for SQLite backup and functional fixtures. Managed mode needs Linux,
 `systemctl --user`, `systemd-run`, `flock`, `ss`, `curl`, Caddy, Tailscale and
 rootless Docker context `rootless`. Named Services require a tagged serving host

@@ -154,7 +154,8 @@ for (const args of [["-a"], ["src/index.ts"]]) {
       f.run("npm", ["run", "hooks:install"]);
       const head = f.git("rev-parse", "HEAD");
       f.write("src/index.ts", "export const value=2\n");
-      f.git("add", "src/index.ts");
+      // Leave the real index clean: Git must supply these bytes in its hook index.
+      assert.equal(f.git("show", ":src/index.ts"), "export const value = 1;");
       const p = f.run("git", ["commit", "-qm", "must refuse", ...args], false);
       assert.notEqual(p.status, 0);
       assert.match(p.stdout + p.stderr, /Code style issues|formatting/i);

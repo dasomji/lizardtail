@@ -28,12 +28,13 @@ with tempfile.TemporaryDirectory(prefix='lt-smoke-') as td:
   resumed=cli('up','--instance','one');assert resumed['urls']==a['urls'];assert get(a['urls']['app'])=='web:one'
   print('PASS: two independent instances, API routing, idempotent up, independent stop, stable resume')
  finally:
-  original=sys.exc_info()[1]
+  journey_error=sys.exc_info()[1]
   errors=[]
   for n in ['one','two']:
    try:cli('down','--instance',n)
    except Exception as e:errors.append(str(e))
   if errors:
    cleanup=RuntimeError('Cleanup: '+'; '.join(errors))
-   if original is not None:raise original from cleanup
-   raise cleanup
+   if journey_error is not None:
+    journey_error.add_note(str(cleanup))
+   else:raise cleanup
