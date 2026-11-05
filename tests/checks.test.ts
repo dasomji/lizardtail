@@ -267,3 +267,15 @@ test("npm verify:app refuses missing Coolify prerequisites before smoke work", (
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+test("renaming wrapper code into managed code checks both related suites", () => {
+  const f = fixture();
+  try {
+    f.git("mv", "src/index.ts", "src/managed/renamed.ts");
+    const p = f.run("npm", ["run", "check:fast"]);
+    assert.match(p.stdout, /wrapper selection/);
+    assert.match(p.stdout, /managed selection/);
+  } finally {
+    f.close();
+  }
+});

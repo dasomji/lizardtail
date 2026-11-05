@@ -24,7 +24,9 @@ try {
   git("diff", "--cached", "--check");
   if (git("ls-files", "--unmerged"))
     throw Error("Resolve unmerged index entries first");
-  const changed = names(git("diff", "--cached", "--name-only", "-z"));
+  const changed = names(
+    git("diff", "--cached", "--no-renames", "--name-only", "-z"),
+  );
   const present = new Set(names(git("ls-files", "-z")));
   const format = (changed.length ? changed : [...present]).filter((p) =>
     present.has(p),

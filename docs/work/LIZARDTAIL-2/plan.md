@@ -43,10 +43,10 @@ kitchen `research/31-migration-dry-run-lizardtail.md` (dry run 2026-11-04 at
 
 ## Chunks
 
-| #   | Outcome                                                                                                                                                                                                                                | Owned files                                                                                                                                                                                                                                                                  | Depends on                                 | Status       |
-| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ | ------------ |
-| A   | Contracts & knowledge: lean `AGENTS.md`, `CLAUDE.md`, `GLOSSARY.md`, ADRs extracted from the two dated docs, out-of-scope records, `docs/agents/development.md` + `doors.md`, README Node 22+ fix and links, retire the two dated docs | `AGENTS.md`, `CLAUDE.md`, `GLOSSARY.md`, `docs/adr/**`, `docs/out-of-scope/**`, `docs/agents/development.md`, `docs/agents/doors.md`, `README.md`, `docs/managed*.md` (links only), dated docs (delete)                                                                      | —                                          | complete     |
-| B   | Verification contract: `lint`, `check:fast`, `check:full`, `verify:app`, pre-commit hook + installer, CI on `check:full`, npm `files` narrowing, formatting cleanup, `docs/agents/verify.md`                                           | `package.json`, `package-lock.json` (only if deps change), `scripts/check-*.mjs`, `scripts/verify-app.mjs`, `scripts/install-hooks.mjs`, `.githooks/**`, `.prettierignore`, `.gitignore`, `.github/workflows/test.yml`, `docs/agents/verify.md`, format-only edits elsewhere | A committed (formatting touches A's files) | verification |
+| #   | Outcome                                                                                                                                                                                                                                | Owned files                                                                                                                                                                                                                                                                  | Depends on                                 | Status              |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ | ------------------- |
+| A   | Contracts & knowledge: lean `AGENTS.md`, `CLAUDE.md`, `GLOSSARY.md`, ADRs extracted from the two dated docs, out-of-scope records, `docs/agents/development.md` + `doors.md`, README Node 22+ fix and links, retire the two dated docs | `AGENTS.md`, `CLAUDE.md`, `GLOSSARY.md`, `docs/adr/**`, `docs/out-of-scope/**`, `docs/agents/development.md`, `docs/agents/doors.md`, `README.md`, `docs/managed*.md` (links only), dated docs (delete)                                                                      | —                                          | complete            |
+| B   | Verification contract: `lint`, `check:fast`, `check:full`, `verify:app`, pre-commit hook + installer, CI on `check:full`, npm `files` narrowing, formatting cleanup, `docs/agents/verify.md`                                           | `package.json`, `package-lock.json` (only if deps change), `scripts/check-*.mjs`, `scripts/verify-app.mjs`, `scripts/install-hooks.mjs`, `.githooks/**`, `.prettierignore`, `.gitignore`, `.github/workflows/test.yml`, `docs/agents/verify.md`, format-only edits elsewhere | A committed (formatting touches A's files) | complete (L3 fails) |
 
 One implementer owns both chunks sequentially (shared files: formatting).
 Then: L2 → verifier L3 on Coolify → one cross-family L4 → delete this
@@ -117,3 +117,23 @@ directory → file-pr.
   three worktrees without the hook (including main); none of those trees changed.
   Unknown/shared staged paths select all tests; a no-diff manual run checks the
   whole index. Full/CI never invoke host smokes.
+
+- Clean implementation SHA 32ed35ec60ac24501643ff5387ad87be94610e83:
+  real L1 commit passed in 41.28 s (41 tests); L2 check:full passed in 42.50 s.
+  L3 attempted all four journeys in 50.52 s: managed, bridge and finish passed;
+  resources failed with PostgreSQL database "app" not yet existing. Together with
+  the earlier shutdown symptom and socket pg_isready implementation, this is
+  consistent with an initialization-readiness race; root cause is not yet proven
+  with container initialization logs. No cleanup errors were reported. This is
+  an honest failed L3, not a passing skip; orchestration must triage before PR.
+- Final tooling self-review found that Git rename detection omitted the old path
+  from related-test selection. A public npm regression test failed first for
+  wrapper-to-managed rename; --no-renames now selects both suites. There are now
+  nine tooling tests (42 total). This fix and final timing/report edits do not
+  change product runtime or the L3 runner/smokes. L3 failure at the SHA above
+  remains applicable; no repeat is needed to mask the existing runtime finding.
+- Final checks: exact Plane block and CLAUDE bytes, all Markdown routing links,
+  unchanged publish.yml/lockfile and package doc exclusions verified. No push, PR,
+  Plane mutation, production operation, main-checkout file edit or memory change.
+  A and the separate format-only commit preceded B's hook bootstrap; their L1
+  contract was unavailable, and final staged/full checks cover the complete tree.
