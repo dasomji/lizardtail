@@ -12,12 +12,9 @@ try {
   });
   if (![0, 1].includes(setting.status))
     throw Error(setting.stderr || "Cannot read hooksPath");
-  if (
-    setting.stdout
-      .split("\n")
-      .filter(Boolean)
-      .some((s) => s !== ".githooks")
-  )
+  const configured =
+    setting.status === 0 ? setting.stdout.replace(/\n$/, "").split("\n") : [];
+  if (configured.some((s) => s !== ".githooks"))
     throw Error(
       "Refusing existing core.hooksPath; integrate hooks explicitly first",
     );

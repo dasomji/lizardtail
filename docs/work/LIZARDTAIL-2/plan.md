@@ -137,3 +137,9 @@ directory → file-pr.
   Plane mutation, production operation, main-checkout file edit or memory change.
   A and the separate format-only commit preceded B's hook bootstrap; their L1
   contract was unavailable, and final staged/full checks cover the complete tree.
+
+- A final installer regression proved that explicitly empty core.hooksPath (an
+  intentional disabled-hook setting) was incorrectly treated as absent. It now
+  refuses and preserves that configuration like every other conflicting value;
+  the public installer test was observed red then green. This is in-scope hook
+  preservation. The preceding 42-test L1 commit passed in 55.15 s.

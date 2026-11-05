@@ -193,6 +193,14 @@ test("hook installer preserves conflicting configuration and common hooks from a
     assert.notEqual(p.status, 0);
     assert.match(p.stderr, /Refusing existing core.hooksPath/);
     assert.equal(f.git("config", "core.hooksPath"), "custom-hooks");
+    f.git("config", "core.hooksPath", "");
+    p = f.run("npm", ["run", "hooks:install"], false);
+    assert.notEqual(
+      p.status,
+      0,
+      "an explicitly empty hooksPath must be preserved",
+    );
+    assert.equal(f.git("config", "core.hooksPath"), "");
     f.git("config", "--unset", "core.hooksPath");
     f.write(".git/hooks/pre-commit", "preserve this non-executable hook\n");
     f.git("worktree", "add", "-qb", "linked", path.join(f.root, "linked"));
