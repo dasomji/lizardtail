@@ -12,25 +12,39 @@ manager and framework's development mode. Example:
   "version": 1,
   "project": "example",
   "envFiles": [".env"],
-  "env": {"APP_URL": "${origin.app}"},
+  "env": { "APP_URL": "${origin.app}" },
   "services": {
     "api": {
       "command": ["node", "--watch", "server.js"],
       "port": true,
-      "env": {"PORT": "${port.api}"},
-      "ready": {"path": "/health", "status": 200, "timeoutMs": 60000}
+      "env": { "PORT": "${port.api}" },
+      "ready": { "path": "/health", "status": 200, "timeoutMs": 60000 }
     },
     "web": {
-      "command": ["npm", "run", "dev", "--", "--host", "127.0.0.1", "--port", "${port.web}", "--strictPort"],
+      "command": [
+        "npm",
+        "run",
+        "dev",
+        "--",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "${port.web}",
+        "--strictPort"
+      ],
       "port": true,
       "dependsOn": ["api"],
-      "ready": {"path": "/"}
+      "ready": { "path": "/" }
     }
   },
-  "endpoints": {"app": {"routes": [
-    {"path": "/api/*", "service": "api", "stripPrefix": true},
-    {"path": "/", "service": "web"}
-  ]}},
+  "endpoints": {
+    "app": {
+      "routes": [
+        { "path": "/api/*", "service": "api", "stripPrefix": true },
+        { "path": "/", "service": "web" }
+      ]
+    }
+  },
   "update": [["npm", "run", "build"]]
 }
 ```
@@ -55,7 +69,12 @@ is `/var/lib/postgresql/data`. Pin the image digest. Changing either the image o
 mount of an existing database requires an explicit data upgrade.
 
 ```json
-{"kind":"postgres","image":"postgres:17-bookworm@sha256:PINNED_DIGEST","source":"import","migrate":["pnpm","db:migrate"]}
+{
+  "kind": "postgres",
+  "image": "postgres:17-bookworm@sha256:PINNED_DIGEST",
+  "source": "import",
+  "migrate": ["pnpm", "db:migrate"]
+}
 ```
 
 `source: "import"` blocks starting main until its deliberate import completes.
@@ -87,7 +106,7 @@ Host file `~/.config/lizardtail/host.json`:
 {
   "portMin": 20000,
   "portMax": 29999,
-  "blockedPorts": [80,443],
+  "blockedPorts": [80, 443],
   "exposure": "service",
   "dockerContext": "rootless",
   "caddy": "/home/dev/.local/bin/caddy"

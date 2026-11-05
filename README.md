@@ -132,16 +132,16 @@ These commands are meant for both humans and coding agents: they describe usage,
 
 ### Options
 
-| Option | Default | Description |
-| --- | --- | --- |
-| `--port <port>` | auto-detect | Expose this port instead of reading one from command output. |
-| `--host <host>` | `127.0.0.1` | Local host to pass to Tailscale Serve/Funnel. |
-| `--timeout <ms>` | `30000` | How long to wait for a port to appear in command output. |
-| `--tailscale-port <port>` | first free `8443+` | Expose the main app on this Tailscale HTTPS port and print it in the MagicDNS URL. Alias: `--https-port`. |
-| `--vite-tailscale-port <port>` | first free `8443+` | Expose a detected Laravel Vite asset server on this Tailscale HTTPS port. Alias: `--vite-https-port`. |
-| `--public`, `--funnel` | disabled | Use Tailscale Funnel for public internet access instead of private tailnet-only Serve. |
-| `--no-open-check` | enabled | Skip waiting for the local port to accept connections before calling Tailscale. |
-| `-h`, `--help` | | Show help. |
+| Option                         | Default            | Description                                                                                               |
+| ------------------------------ | ------------------ | --------------------------------------------------------------------------------------------------------- |
+| `--port <port>`                | auto-detect        | Expose this port instead of reading one from command output.                                              |
+| `--host <host>`                | `127.0.0.1`        | Local host to pass to Tailscale Serve/Funnel.                                                             |
+| `--timeout <ms>`               | `30000`            | How long to wait for a port to appear in command output.                                                  |
+| `--tailscale-port <port>`      | first free `8443+` | Expose the main app on this Tailscale HTTPS port and print it in the MagicDNS URL. Alias: `--https-port`. |
+| `--vite-tailscale-port <port>` | first free `8443+` | Expose a detected Laravel Vite asset server on this Tailscale HTTPS port. Alias: `--vite-https-port`.     |
+| `--public`, `--funnel`         | disabled           | Use Tailscale Funnel for public internet access instead of private tailnet-only Serve.                    |
+| `--no-open-check`              | enabled            | Skip waiting for the local port to accept connections before calling Tailscale.                           |
+| `-h`, `--help`                 |                    | Show help.                                                                                                |
 
 ## Examples
 
