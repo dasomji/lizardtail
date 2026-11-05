@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Host-only functional rung. No real project registry, Tailnet or production changes.
 import { command as runCommand } from "./verify-command.mjs";
+import { verifyPython } from "./verify-python.mjs";
 import { accessSync, constants } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -30,7 +31,7 @@ try {
     throw Error("preflight: executable Caddy required at ~/.local/bin/caddy");
   }
   await command(caddy, ["version"], true);
-  await command("python3", ["--version"], true);
+  await verifyPython({ cwd: root, env });
   await command("flock", ["--version"], true);
   await command("ss", ["--version"], true);
   await command("curl", ["--version"], true);

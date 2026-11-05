@@ -76,6 +76,8 @@ in `scripts/smoke-resources.mjs` must already be available in that context. A mi
 prerequisite fails clearly before fixtures start; it is not a passing skip.
 Check missing-prerequisite refusals manually as part of L3. Automated L2/CI tests
 invoke `verify:app` only with `CI=true` and assert its never-in-CI refusal.
+The Python version prerequisite is also tested at an isolated interpreter boundary
+without entering the host runner or its journeys.
 
 The runner builds this checkout's `dist` and invokes, in order:
 

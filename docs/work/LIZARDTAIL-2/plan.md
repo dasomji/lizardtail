@@ -54,6 +54,8 @@ directory → file-pr.
 
 ## Findings tracked here
 
+- Final review: Python preflight now enforces 3.11+ with a clear refusal; hermetic interpreter tests reject 3.10 and accept 3.11/3.12 without host journeys (red before green).
+
 - Source inventory: README + managed/config guides = durable, retained; the two
   dated reports = mixed work records, durable rationale extracted into three ADRs,
   one rejection record and agent guides, then retired. LICENSE, executable sources,
