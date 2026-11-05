@@ -1,5 +1,8 @@
 # Project and host configuration
 
+For CLI development fixtures and checks, see [development](agents/development.md)
+and [verification](agents/verify.md).
+
 `lizardtail.project.json` is checked into each project and inherited by worktrees.
 Commands are arrays of arguments, not shell strings. Use the actual package
 manager and framework's development mode. Example:
