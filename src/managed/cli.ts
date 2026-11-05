@@ -372,7 +372,9 @@ async function finish(p: Plan, pr: string) {
       cwd: main.root,
     });
   } catch {
-    throw Error("Main history cannot fast-forward; keeping its preview running");
+    throw Error(
+      "Main history cannot fast-forward; keeping its preview running",
+    );
   }
   await down(main);
   await run("git", ["merge", "--ff-only", target], { cwd: main.root });

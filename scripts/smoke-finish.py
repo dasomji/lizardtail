@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Real git/SQLite/systemd cleanup lifecycle with mocked GitHub metadata."""
-import json,os,pathlib,sqlite3,subprocess,tempfile
+import sys,json,os,pathlib,sqlite3,subprocess,tempfile
 repo=pathlib.Path(__file__).resolve().parents[1]
 with tempfile.TemporaryDirectory(prefix='lt-finish-') as td:
  t=pathlib.Path(td);main=t/'main';feature=t/'feature';remote=t/'remote.git';merger=t/'merger';bindir=t/'bin';bindir.mkdir();fail=t/'fail-migration';metadata=t/'pr.json'
@@ -26,14 +26,25 @@ with tempfile.TemporaryDirectory(prefix='lt-finish-') as td:
   c=sqlite3.connect(fdb);c.execute("UPDATE sample SET value='feature-data'");c.commit();c.close()
   meta('OPEN');assert cli(['finish','--pr','1'],feature,'feature',False).returncode!=0;assert fdb.exists()
   git('worktree','add','-b','integrate',str(merger));git('merge','--no-ff','feature','-m','merged',cwd=merger);merge=git('rev-parse','HEAD',cwd=merger);git('push','origin','HEAD:main',cwd=merger);meta('MERGED',merge)
-  original=git('rev-parse','HEAD');pid=run(['systemctl','--user','show',mp['unit'],'--property=MainPID','--value']).stdout.strip()
+  main_head=git('rev-parse','HEAD');pid=run(['systemctl','--user','show',mp['unit'],'--property=MainPID','--value']).stdout.strip()
   git('commit','--allow-empty','-m','local divergence');result=cli(['finish','--pr','1'],feature,'feature',False)
   assert result.returncode!=0 and 'cannot fast-forward' in result.stderr
   assert run(['systemctl','--user','show',mp['unit'],'--property=MainPID','--value']).stdout.strip()==pid and pid!='0';assert fdb.exists()
-  git('branch','-m','main','saved-divergent-main');git('switch','-c','main',original)
+  git('branch','-m','main','saved-divergent-main');git('switch','-c','main',main_head)
   fail.touch();assert cli(['finish','--pr','1'],feature,'feature',False).returncode!=0;assert fdb.exists();assert list(pathlib.Path(mp['dir']).glob('backup-*.sqlite'))
   fail.unlink();cli(['finish','--pr','1'],feature,'feature');assert not fdb.exists();assert json.loads((pathlib.Path(fp['dir'])/'finish.json').read_text())['stage']=='cleaned'
   c=sqlite3.connect(pathlib.Path(mp['dir'])/'database.sqlite');assert c.execute('SELECT value FROM sample').fetchone()[0]=='main-data';c.close();assert cli(['up'],feature,'feature',False).returncode!=0
   print('PASS: divergent main keeps preview running; unmerged cleanup refused, failed main migration preserves feature data + backup, merged cleanup removes feature only, main rows retained, finished instance cannot restart')
  finally:
-  for root,instance in [(feature,'feature'),(main,'main')]:cli(['down'],root,instance,False)
+  journey_error=sys.exc_info()[1]
+  errors=[]
+  for root,instance in [(feature,'feature'),(main,'main')]:
+   try:
+    result=cli(['down'],root,instance,False)
+    if result.returncode:errors.append(result.stderr+result.stdout)
+   except Exception as e:errors.append(str(e))
+  if errors:
+   cleanup=RuntimeError('Cleanup: '+'; '.join(errors))
+   if journey_error is not None:
+    journey_error.add_note(str(cleanup))
+   else:raise cleanup

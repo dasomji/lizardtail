@@ -42,7 +42,7 @@ Use it when your dev server is running on a remote machine and you want to open 
 
 ## Requirements
 
-- Node.js 20 or newer.
+- Node.js 22 or newer.
 - Tailscale installed and available as `tailscale` on `PATH`.
 - The device must be logged into Tailscale.
 - Tailscale Serve must be available for the device/tailnet.
@@ -80,12 +80,15 @@ lizardtail help
 
 ### Development from source
 
+See [agent development](https://github.com/dasomji/lizardtail/blob/main/docs/agents/development.md) and
+[verification](https://github.com/dasomji/lizardtail/blob/main/docs/agents/verify.md) for isolated fixtures and checks.
+
 Use `git clone` only if you want to work on `lizardtail` itself:
 
 ```bash
 git clone https://github.com/dasomji/lizardtail.git
 cd lizardtail
-npm install
+npm ci
 npm run build
 npm link
 ```
@@ -129,16 +132,16 @@ These commands are meant for both humans and coding agents: they describe usage,
 
 ### Options
 
-| Option | Default | Description |
-| --- | --- | --- |
-| `--port <port>` | auto-detect | Expose this port instead of reading one from command output. |
-| `--host <host>` | `127.0.0.1` | Local host to pass to Tailscale Serve/Funnel. |
-| `--timeout <ms>` | `30000` | How long to wait for a port to appear in command output. |
-| `--tailscale-port <port>` | first free `8443+` | Expose the main app on this Tailscale HTTPS port and print it in the MagicDNS URL. Alias: `--https-port`. |
-| `--vite-tailscale-port <port>` | first free `8443+` | Expose a detected Laravel Vite asset server on this Tailscale HTTPS port. Alias: `--vite-https-port`. |
-| `--public`, `--funnel` | disabled | Use Tailscale Funnel for public internet access instead of private tailnet-only Serve. |
-| `--no-open-check` | enabled | Skip waiting for the local port to accept connections before calling Tailscale. |
-| `-h`, `--help` | | Show help. |
+| Option                         | Default            | Description                                                                                               |
+| ------------------------------ | ------------------ | --------------------------------------------------------------------------------------------------------- |
+| `--port <port>`                | auto-detect        | Expose this port instead of reading one from command output.                                              |
+| `--host <host>`                | `127.0.0.1`        | Local host to pass to Tailscale Serve/Funnel.                                                             |
+| `--timeout <ms>`               | `30000`            | How long to wait for a port to appear in command output.                                                  |
+| `--tailscale-port <port>`      | first free `8443+` | Expose the main app on this Tailscale HTTPS port and print it in the MagicDNS URL. Alias: `--https-port`. |
+| `--vite-tailscale-port <port>` | first free `8443+` | Expose a detected Laravel Vite asset server on this Tailscale HTTPS port. Alias: `--vite-https-port`.     |
+| `--public`, `--funnel`         | disabled           | Use Tailscale Funnel for public internet access instead of private tailnet-only Serve.                    |
+| `--no-open-check`              | enabled            | Skip waiting for the local port to accept connections before calling Tailscale.                           |
+| `-h`, `--help`                 |                    | Show help.                                                                                                |
 
 ## Examples
 
@@ -384,29 +387,12 @@ Some frameworks, especially full-stack apps with separate backend and Vite dev s
 
 Some dev servers reject requests from the Tailscale hostname. Configure your dev server to allow the Tailscale MagicDNS host or to bind with the right host/CORS options. For example, Vite may need `--host 0.0.0.0` and framework-specific allowed-host settings.
 
-## Development
+## Development and contributing
 
-```bash
-npm install
-npm run typecheck
-npm test
-npm run build
-```
-
-The test suite uses Node's built-in test runner through `tsx` and includes:
-
-- unit tests for argument parsing and port detection;
-- an integration-style CLI test with a fake `tailscale` executable and a real temporary HTTP server.
-
-## Contributing
-
-Issues and pull requests are welcome. Please include tests for behavior changes and run:
-
-```bash
-npm test
-```
-
-before opening a pull request.
+Use [the development guide](https://github.com/dasomji/lizardtail/blob/main/docs/agents/development.md) to set up the CLI and
+[the verification guide](https://github.com/dasomji/lizardtail/blob/main/docs/agents/verify.md) for hook installation, checks and
+functional coverage. Run `npm run check:full` before handing changes over.
+Issues and pull requests are welcome; include tests for behavior changes.
 
 ## License
 

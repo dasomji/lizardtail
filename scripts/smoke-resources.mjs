@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // Disposable real PostgreSQL/S3 integration test; destroys only its labeled resources.
+import { smokeCleanup } from "./smoke-cleanup.mjs";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -72,6 +73,7 @@ await writeFile(
 );
 const plans = [];
 const clients = [];
+let journeyError;
 const sql = (p, q) =>
   docker(
     p,
@@ -91,6 +93,42 @@ const sql = (p, q) =>
     ],
     q,
   );
+const cleanup = smokeCleanup(async () => {
+  const errors = [];
+  for (const c of clients) {
+    try {
+      c.destroy();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  for (const p of plans.reverse()) {
+    try {
+      await down(p);
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      await stopResources(p, true);
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (!errors.length) {
+    try {
+      await rm(root, { recursive: true, force: true });
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (errors.length)
+    throw new AggregateError(
+      journeyError ? [journeyError, ...errors] : errors,
+      `Cleanup failed; fixture retained at ${root}`,
+      { cause: journeyError },
+    );
+});
+
 try {
   const main = await plan(root, "main");
   plans.push(main);
@@ -194,11 +232,9 @@ try {
   console.log(
     "PASS: PostgreSQL clone isolation, persistent stop/resume, S3 clone isolation, signed PUT/GET through Caddy, browser CORS",
   );
+} catch (error) {
+  journeyError = error;
+  throw error;
 } finally {
-  for (const c of clients) c.destroy();
-  for (const p of plans.reverse()) {
-    await down(p);
-    await stopResources(p, true);
-  }
-  await rm(root, { recursive: true, force: true });
+  await cleanup();
 }

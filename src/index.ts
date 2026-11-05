@@ -45,12 +45,14 @@ const DEFAULT_CONFIG: LizardtailConfig = {
     {
       port: 80,
       scope: "both",
-      reason: "Common HTTP ingress/proxy port. Blocking prevents dev exposure from replacing a production web route.",
+      reason:
+        "Common HTTP ingress/proxy port. Blocking prevents dev exposure from replacing a production web route.",
     },
     {
       port: 443,
       scope: "both",
-      reason: "Common HTTPS ingress/proxy port. Lizard Tail defaults to high explicit Tailscale HTTPS ports instead.",
+      reason:
+        "Common HTTPS ingress/proxy port. Lizard Tail defaults to high explicit Tailscale HTTPS ports instead.",
     },
   ],
 };
@@ -263,12 +265,16 @@ export function parseArgs(argv: string[]): Options {
     }
 
     if (arg.startsWith("--vite-tailscale-port=")) {
-      options.viteTailscalePort = parsePort(arg.slice("--vite-tailscale-port=".length));
+      options.viteTailscalePort = parsePort(
+        arg.slice("--vite-tailscale-port=".length),
+      );
       continue;
     }
 
     if (arg.startsWith("--vite-https-port=")) {
-      options.viteTailscalePort = parsePort(arg.slice("--vite-https-port=".length));
+      options.viteTailscalePort = parsePort(
+        arg.slice("--vite-https-port=".length),
+      );
       continue;
     }
 
@@ -325,7 +331,8 @@ async function loadConfig(): Promise<LizardtailConfig> {
     const parsed = JSON.parse(raw) as Partial<LizardtailConfig>;
     return normalizeConfig(parsed, configPath);
   } catch (error) {
-    if (error instanceof SyntaxError) throw new Error(`failed to parse ${configPath}: ${error.message}`);
+    if (error instanceof SyntaxError)
+      throw new Error(`failed to parse ${configPath}: ${error.message}`);
     throw error;
   }
 }
@@ -341,17 +348,25 @@ function findConfigPath(): string | undefined {
   return undefined;
 }
 
-function normalizeConfig(config: Partial<LizardtailConfig>, source: string): LizardtailConfig {
+function normalizeConfig(
+  config: Partial<LizardtailConfig>,
+  source: string,
+): LizardtailConfig {
   if (!Array.isArray(config.blockedPorts)) {
     throw new Error(`${source} must contain a blockedPorts array`);
   }
 
   return {
-    blockedPorts: config.blockedPorts.map((rule, index) => normalizeBlockedPortRule(rule, `${source}:blockedPorts[${index}]`)),
+    blockedPorts: config.blockedPorts.map((rule, index) =>
+      normalizeBlockedPortRule(rule, `${source}:blockedPorts[${index}]`),
+    ),
   };
 }
 
-function normalizeBlockedPortRule(rule: Partial<BlockedPortRule>, label: string): BlockedPortRule {
+function normalizeBlockedPortRule(
+  rule: Partial<BlockedPortRule>,
+  label: string,
+): BlockedPortRule {
   const port = Number(rule.port);
   if (!Number.isInteger(port) || port < 1 || port > 65_535) {
     throw new Error(`${label}.port must be an integer from 1 to 65535`);
@@ -362,15 +377,32 @@ function normalizeBlockedPortRule(rule: Partial<BlockedPortRule>, label: string)
     throw new Error(`${label}.scope must be "local", "tailscale", or "both"`);
   }
 
-  const reason = typeof rule.reason === "string" && rule.reason.trim() ? rule.reason.trim() : "Blocked by lizardtail configuration.";
+  const reason =
+    typeof rule.reason === "string" && rule.reason.trim()
+      ? rule.reason.trim()
+      : "Blocked by lizardtail configuration.";
   return { port, scope, reason };
 }
 
-function findBlockedPortRule(config: LizardtailConfig, port: number, scope: Exclude<BlockedPortScope, "both">): BlockedPortRule | undefined {
-  return config.blockedPorts.find((rule) => rule.port === port && (rule.scope === "both" || rule.scope === scope || rule.scope === undefined));
+function findBlockedPortRule(
+  config: LizardtailConfig,
+  port: number,
+  scope: Exclude<BlockedPortScope, "both">,
+): BlockedPortRule | undefined {
+  return config.blockedPorts.find(
+    (rule) =>
+      rule.port === port &&
+      (rule.scope === "both" ||
+        rule.scope === scope ||
+        rule.scope === undefined),
+  );
 }
 
-function assertPortAllowed(config: LizardtailConfig, port: number, scope: Exclude<BlockedPortScope, "both">): void {
+function assertPortAllowed(
+  config: LizardtailConfig,
+  port: number,
+  scope: Exclude<BlockedPortScope, "both">,
+): void {
   const rule = findBlockedPortRule(config, port, scope);
   if (!rule) return;
 
@@ -409,10 +441,13 @@ function detectPortCandidatesFromLine(line: string): PortCandidate[] {
   const lowerLine = line.toLowerCase();
   if (/\b(?:in use|already in use|eaddrinuse)\b/i.test(line)) return candidates;
   const lineLooksLikeDuration = /\b\d{1,5}\s*ms\b/i.test(line);
-  const lineLooksLikeServer = /\b(server|listening|started|running)\b/i.test(line) || /\[server\]/i.test(line);
+  const lineLooksLikeServer =
+    /\b(server|listening|started|running)\b/i.test(line) ||
+    /\[server\]/i.test(line);
   const lineLooksLikeVite = /\[vite\]|\bvite\b/i.test(line);
 
-  const localUrlPattern = /https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|::1):(\d{1,5})/gi;
+  const localUrlPattern =
+    /https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|::1):(\d{1,5})/gi;
   for (const match of line.matchAll(localUrlPattern)) {
     const port = validDetectedPort(match[2]);
     if (!port) continue;
@@ -426,13 +461,18 @@ function detectPortCandidatesFromLine(line: string): PortCandidate[] {
 
   if (lineLooksLikeDuration) return candidates;
 
-  const portPhrase = line.match(/\b(?:port|PORT)\s*(?:=|:|is|on)?\s*(\d{2,5})\b/);
+  const portPhrase = line.match(
+    /\b(?:port|PORT)\s*(?:=|:|is|on)?\s*(\d{2,5})\b/,
+  );
   if (portPhrase?.[1]) {
     const port = validDetectedPort(portPhrase[1]);
-    if (port) candidates.push({ port, score: lowerLine.includes("in use") ? 20 : 45 });
+    if (port)
+      candidates.push({ port, score: lowerLine.includes("in use") ? 20 : 45 });
   }
 
-  const serverPort = line.match(/\b(?:listening|started|running|server)\b[^\n\r]*:(\d{2,5})\b/i);
+  const serverPort = line.match(
+    /\b(?:listening|started|running|server)\b[^\n\r]*:(\d{2,5})\b/i,
+  );
   if (serverPort?.[1]) {
     const port = validDetectedPort(serverPort[1]);
     if (port) candidates.push({ port, score: lineLooksLikeServer ? 60 : 40 });
@@ -443,7 +483,9 @@ function detectPortCandidatesFromLine(line: string): PortCandidate[] {
 
 function validDetectedPort(value: string): number | undefined {
   const port = Number(value);
-  return Number.isInteger(port) && port > 0 && port <= 65_535 ? port : undefined;
+  return Number.isInteger(port) && port > 0 && port <= 65_535
+    ? port
+    : undefined;
 }
 
 interface LaravelViteDetection {
@@ -456,11 +498,17 @@ export function detectLaravelViteServers(text: string): LaravelViteDetection {
   const clean = stripAnsi(text);
   const detection: LaravelViteDetection = {};
 
-  const appMatch = clean.match(/\[server\][^\n\r]*Server running on \[http:\/\/(?:127\.0\.0\.1|localhost|0\.0\.0\.0|\[::1\]|::1):(\d{1,5})\]/i);
+  const appMatch = clean.match(
+    /\[server\][^\n\r]*Server running on \[http:\/\/(?:127\.0\.0\.1|localhost|0\.0\.0\.0|\[::1\]|::1):(\d{1,5})\]/i,
+  );
   const appPort = appMatch?.[1] ? validDetectedPort(appMatch[1]) : undefined;
   if (appPort) detection.appPort = appPort;
 
-  const viteMatch = [...clean.matchAll(/\[vite\][^\n\r]*(?:Local:)\s*http:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|::1):(\d{1,5})\/?/gi)].at(-1);
+  const viteMatch = [
+    ...clean.matchAll(
+      /\[vite\][^\n\r]*(?:Local:)\s*http:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|::1):(\d{1,5})\/?/gi,
+    ),
+  ].at(-1);
   const vitePort = viteMatch?.[2] ? validDetectedPort(viteMatch[2]) : undefined;
   if (vitePort) {
     detection.vitePort = vitePort;
@@ -480,20 +528,35 @@ function errorMessage(error: unknown): string {
 
 function isTailscaleServePermissionError(error: unknown): boolean {
   const message = errorMessage(error).toLowerCase();
-  return message.includes("access denied") && (message.includes("sudo tailscale serve") || message.includes("sudo tailscale funnel") || message.includes("operator"));
+  return (
+    message.includes("access denied") &&
+    (message.includes("sudo tailscale serve") ||
+      message.includes("sudo tailscale funnel") ||
+      message.includes("operator"))
+  );
 }
 
 type ExposureMode = "serve" | "funnel";
 
-function tailscaleExposeCommand(target: string, tailscalePort: number, mode: ExposureMode): string[] {
+function tailscaleExposeCommand(
+  target: string,
+  tailscalePort: number,
+  mode: ExposureMode,
+): string[] {
   return [mode, "--bg", "--https", String(tailscalePort), target];
 }
 
 function tailscaleUrl(dnsName: string, tailscalePort?: number): string {
-  return tailscalePort === undefined ? `https://${dnsName}` : `https://${dnsName}:${tailscalePort}`;
+  return tailscalePort === undefined
+    ? `https://${dnsName}`
+    : `https://${dnsName}:${tailscalePort}`;
 }
 
-function tailscaleServePermissionHelp(target: string, tailscalePort: number, mode: ExposureMode): string {
+function tailscaleServePermissionHelp(
+  target: string,
+  tailscalePort: number,
+  mode: ExposureMode,
+): string {
   const label = mode === "funnel" ? "Funnel" : "Serve";
   return `Tailscale refused to update ${label} config without elevated privileges.
 
@@ -508,9 +571,13 @@ Or expose this server manually with:
   sudo tailscale ${tailscaleExposeCommand(target, tailscalePort, mode).join(" ")}`;
 }
 
-async function exec(command: string, args: string[], opts: { input?: string; env?: NodeJS.ProcessEnv } = {}): Promise<{ stdout: string; stderr: string }> {
+async function exec(
+  command: string,
+  args: string[],
+  opts: { input?: string; env?: NodeJS.ProcessEnv } = {},
+): Promise<{ stdout: string; stderr: string }> {
   const childEnv = opts.env ?? process.env;
-  
+
   const child = spawn(command, args, {
     stdio: [opts.input ? "pipe" : "ignore", "pipe", "pipe"],
     env: childEnv,
@@ -545,13 +612,19 @@ async function exec(command: string, args: string[], opts: { input?: string; env
   ])) as [number | null, NodeJS.Signals | null];
   if (code !== 0) {
     const reason = signal ? `signal ${signal}` : `exit code ${code}`;
-    throw new Error(`${command} ${args.join(" ")} failed with ${reason}\n${stderr || stdout}`.trim());
+    throw new Error(
+      `${command} ${args.join(" ")} failed with ${reason}\n${stderr || stdout}`.trim(),
+    );
   }
 
   return { stdout, stderr };
 }
 
-export async function waitForOpenPort(host: string, port: number, timeoutMs: number): Promise<void> {
+export async function waitForOpenPort(
+  host: string,
+  port: number,
+  timeoutMs: number,
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
 
   while (Date.now() < deadline) {
@@ -571,7 +644,9 @@ export async function waitForOpenPort(host: string, port: number, timeoutMs: num
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
 
-  throw new Error(`timed out waiting for ${host}:${port} to accept connections`);
+  throw new Error(
+    `timed out waiting for ${host}:${port} to accept connections`,
+  );
 }
 
 async function getTailscaleDnsName(): Promise<string | undefined> {
@@ -584,7 +659,9 @@ interface TailscaleExposureStatus {
   Web?: Record<string, { Handlers?: Record<string, { Proxy?: string }> }>;
 }
 
-async function getTailscaleExposureStatus(mode: ExposureMode): Promise<TailscaleExposureStatus | undefined> {
+async function getTailscaleExposureStatus(
+  mode: ExposureMode,
+): Promise<TailscaleExposureStatus | undefined> {
   try {
     const { stdout } = await exec("tailscale", [mode, "status", "--json"]);
     return JSON.parse(stdout) as TailscaleExposureStatus;
@@ -593,7 +670,10 @@ async function getTailscaleExposureStatus(mode: ExposureMode): Promise<Tailscale
   }
 }
 
-function collectTailscaleStatusPorts(status: TailscaleExposureStatus | undefined, usedPorts: Set<number>): void {
+function collectTailscaleStatusPorts(
+  status: TailscaleExposureStatus | undefined,
+  usedPorts: Set<number>,
+): void {
   if (!status?.Web) return;
 
   for (const key of Object.keys(status.Web)) {
@@ -603,18 +683,40 @@ function collectTailscaleStatusPorts(status: TailscaleExposureStatus | undefined
   }
 }
 
-async function resolveTailscaleHttpsPort(_target: string, requestedPort?: number, config = DEFAULT_CONFIG): Promise<number> {
+async function resolveTailscaleHttpsPort(
+  _target: string,
+  requestedPort?: number,
+  config = DEFAULT_CONFIG,
+): Promise<number> {
   if (requestedPort !== undefined) return requestedPort;
   return chooseTailscaleHttpsPort(undefined, config);
 }
 
-async function chooseTailscaleHttpsPort(excludedPort?: number, config = DEFAULT_CONFIG): Promise<number> {
+async function chooseTailscaleHttpsPort(
+  excludedPort?: number,
+  config = DEFAULT_CONFIG,
+): Promise<number> {
   const usedPorts = new Set<number>();
-  collectTailscaleStatusPorts(await getTailscaleExposureStatus("serve"), usedPorts);
-  collectTailscaleStatusPorts(await getTailscaleExposureStatus("funnel"), usedPorts);
+  collectTailscaleStatusPorts(
+    await getTailscaleExposureStatus("serve"),
+    usedPorts,
+  );
+  collectTailscaleStatusPorts(
+    await getTailscaleExposureStatus("funnel"),
+    usedPorts,
+  );
 
-  for (let port = DEFAULT_TAILSCALE_HTTPS_PORT; port <= MAX_AUTO_TAILSCALE_HTTPS_PORT; port += 1) {
-    if (port === excludedPort || usedPorts.has(port) || findBlockedPortRule(config, port, "tailscale")) continue;
+  for (
+    let port = DEFAULT_TAILSCALE_HTTPS_PORT;
+    port <= MAX_AUTO_TAILSCALE_HTTPS_PORT;
+    port += 1
+  ) {
+    if (
+      port === excludedPort ||
+      usedPorts.has(port) ||
+      findBlockedPortRule(config, port, "tailscale")
+    )
+      continue;
     return port;
   }
 
@@ -632,12 +734,23 @@ interface LaravelHotFileState extends LaravelHotFileSnapshot {
 }
 
 function looksLikeLaravelProject(cwd = process.cwd()): boolean {
-  return existsSync(path.join(cwd, "artisan")) && existsSync(path.join(cwd, "public"));
+  return (
+    existsSync(path.join(cwd, "artisan")) &&
+    existsSync(path.join(cwd, "public"))
+  );
 }
 
-function resolveLaravelViteSetup(text: string, explicitAppPort?: number, cwd = process.cwd()): Required<LaravelViteDetection> | undefined {
+function resolveLaravelViteSetup(
+  text: string,
+  explicitAppPort?: number,
+  cwd = process.cwd(),
+): Required<LaravelViteDetection> | undefined {
   const detection = detectLaravelViteServers(text);
-  const appPort = detection.appPort ?? (explicitAppPort && detection.vitePort && looksLikeLaravelProject(cwd) ? explicitAppPort : undefined);
+  const appPort =
+    detection.appPort ??
+    (explicitAppPort && detection.vitePort && looksLikeLaravelProject(cwd)
+      ? explicitAppPort
+      : undefined);
   if (!appPort || !detection.vitePort) return undefined;
 
   return {
@@ -647,20 +760,29 @@ function resolveLaravelViteSetup(text: string, explicitAppPort?: number, cwd = p
   };
 }
 
-async function snapshotLaravelHotFile(): Promise<LaravelHotFileSnapshot | undefined> {
+async function snapshotLaravelHotFile(): Promise<
+  LaravelHotFileSnapshot | undefined
+> {
   const publicDir = path.join(process.cwd(), "public");
   if (!existsSync(publicDir)) return undefined;
 
   const hotPath = path.join(publicDir, "hot");
   try {
-    return { path: hotPath, existed: true, previousContent: await readFile(hotPath, "utf8") };
+    return {
+      path: hotPath,
+      existed: true,
+      previousContent: await readFile(hotPath, "utf8"),
+    };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     return { path: hotPath, existed: false };
   }
 }
 
-async function writeLaravelHotFile(viteUrl: string, snapshot?: LaravelHotFileSnapshot): Promise<LaravelHotFileState | undefined> {
+async function writeLaravelHotFile(
+  viteUrl: string,
+  snapshot?: LaravelHotFileSnapshot,
+): Promise<LaravelHotFileState | undefined> {
   const state = snapshot ?? (await snapshotLaravelHotFile());
   if (!state) return undefined;
 
@@ -668,7 +790,9 @@ async function writeLaravelHotFile(viteUrl: string, snapshot?: LaravelHotFileSna
   return { ...state, generatedContent: viteUrl };
 }
 
-async function restoreLaravelHotFile(state: LaravelHotFileState): Promise<void> {
+async function restoreLaravelHotFile(
+  state: LaravelHotFileState,
+): Promise<void> {
   let currentContent: string | undefined;
   try {
     currentContent = await readFile(state.path, "utf8");
@@ -678,7 +802,9 @@ async function restoreLaravelHotFile(state: LaravelHotFileState): Promise<void> 
   }
 
   if (currentContent !== state.generatedContent) {
-    console.error(`lizardtail: leaving Laravel Vite hot file unchanged because it was modified after lizardtail wrote it: ${state.path}`);
+    console.error(
+      `lizardtail: leaving Laravel Vite hot file unchanged because it was modified after lizardtail wrote it: ${state.path}`,
+    );
     return;
   }
 
@@ -692,7 +818,10 @@ interface CorsProxy {
   server: Server;
 }
 
-async function startCorsProxy(targetHost: string, targetPort: number): Promise<CorsProxy> {
+async function startCorsProxy(
+  targetHost: string,
+  targetPort: number,
+): Promise<CorsProxy> {
   const server = createServer((incoming, response) => {
     if (incoming.method === "OPTIONS") {
       response.writeHead(204, corsHeaders());
@@ -727,10 +856,17 @@ async function startCorsProxy(targetHost: string, targetPort: number): Promise<C
 
   server.on("upgrade", (request, socket, head) => {
     const upstream = net.connect(targetPort, targetHost, () => {
-      upstream.write(`${request.method ?? "GET"} ${request.url ?? "/"} HTTP/${request.httpVersion}\r\n`);
-      for (const [name, value] of Object.entries({ ...request.headers, host: `${targetHost}:${targetPort}` })) {
+      upstream.write(
+        `${request.method ?? "GET"} ${request.url ?? "/"} HTTP/${request.httpVersion}\r\n`,
+      );
+      for (const [name, value] of Object.entries({
+        ...request.headers,
+        host: `${targetHost}:${targetPort}`,
+      })) {
         if (value === undefined) continue;
-        upstream.write(`${name}: ${Array.isArray(value) ? value.join(",") : value}\r\n`);
+        upstream.write(
+          `${name}: ${Array.isArray(value) ? value.join(",") : value}\r\n`,
+        );
       }
       upstream.write(`\r\n`);
       if (head.length > 0) upstream.write(head);
@@ -749,7 +885,8 @@ async function startCorsProxy(targetHost: string, targetPort: number): Promise<C
   });
 
   const address = server.address();
-  if (!address || typeof address === "string") throw new Error("failed to start Vite CORS proxy");
+  if (!address || typeof address === "string")
+    throw new Error("failed to start Vite CORS proxy");
 
   return { host: "127.0.0.1", port: address.port, server };
 }
@@ -757,7 +894,8 @@ async function startCorsProxy(targetHost: string, targetPort: number): Promise<C
 function corsHeaders(): Record<string, string> {
   return {
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS",
+    "Access-Control-Allow-Methods":
+      "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "*",
     "Access-Control-Allow-Private-Network": "true",
   };
@@ -769,52 +907,96 @@ interface TailscaleExposure {
   mode: ExposureMode;
 }
 
-async function exposeWithTailscaleDetailed(host: string, port: number, tailscalePort?: number, publicExposure = false, config?: LizardtailConfig): Promise<TailscaleExposure> {
+async function exposeWithTailscaleDetailed(
+  host: string,
+  port: number,
+  tailscalePort?: number,
+  publicExposure = false,
+  config?: LizardtailConfig,
+): Promise<TailscaleExposure> {
   const resolvedConfig = config ?? (await loadConfig());
   assertPortAllowed(resolvedConfig, port, "local");
   await exec("tailscale", ["status"]);
 
   const target = `http://${host}:${port}`;
-  const resolvedTailscalePort = await resolveTailscaleHttpsPort(target, tailscalePort, resolvedConfig);
+  const resolvedTailscalePort = await resolveTailscaleHttpsPort(
+    target,
+    tailscalePort,
+    resolvedConfig,
+  );
   assertPortAllowed(resolvedConfig, resolvedTailscalePort, "tailscale");
   const mode: ExposureMode = publicExposure ? "funnel" : "serve";
 
   try {
-    await exec("tailscale", tailscaleExposeCommand(target, resolvedTailscalePort, mode));
+    await exec(
+      "tailscale",
+      tailscaleExposeCommand(target, resolvedTailscalePort, mode),
+    );
   } catch (firstError) {
     if (isTailscaleServePermissionError(firstError)) {
-      throw new Error(tailscaleServePermissionHelp(target, resolvedTailscalePort, mode));
+      throw new Error(
+        tailscaleServePermissionHelp(target, resolvedTailscalePort, mode),
+      );
     }
 
     if (host !== "127.0.0.1" && host !== "localhost") throw firstError;
 
     try {
-      await exec("tailscale", tailscaleExposeCommand(String(port), resolvedTailscalePort, mode));
+      await exec(
+        "tailscale",
+        tailscaleExposeCommand(String(port), resolvedTailscalePort, mode),
+      );
     } catch (fallbackError) {
       if (isTailscaleServePermissionError(fallbackError)) {
-        throw new Error(tailscaleServePermissionHelp(target, resolvedTailscalePort, mode));
+        throw new Error(
+          tailscaleServePermissionHelp(target, resolvedTailscalePort, mode),
+        );
       }
       throw fallbackError;
     }
   }
 
   const { stdout } = await exec("tailscale", ["status", "--json"]);
-  const status = JSON.parse(stdout) as { Self?: { DNSName?: string; TailscaleIPs?: string[] } };
+  const status = JSON.parse(stdout) as {
+    Self?: { DNSName?: string; TailscaleIPs?: string[] };
+  };
   const dnsName = status.Self?.DNSName?.replace(/\.$/, "");
 
-  if (dnsName) return { url: tailscaleUrl(dnsName, resolvedTailscalePort), httpsPort: resolvedTailscalePort, mode };
+  if (dnsName)
+    return {
+      url: tailscaleUrl(dnsName, resolvedTailscalePort),
+      httpsPort: resolvedTailscalePort,
+      mode,
+    };
 
-  const ip = status.Self?.TailscaleIPs?.find((value) => /^\d+\.\d+\.\d+\.\d+$/.test(value));
-  if (ip) return { url: tailscaleUrl(ip, resolvedTailscalePort), httpsPort: resolvedTailscalePort, mode };
+  const ip = status.Self?.TailscaleIPs?.find((value) =>
+    /^\d+\.\d+\.\d+\.\d+$/.test(value),
+  );
+  if (ip)
+    return {
+      url: tailscaleUrl(ip, resolvedTailscalePort),
+      httpsPort: resolvedTailscalePort,
+      mode,
+    };
 
   throw new Error("could not determine this device's Tailscale DNS name or IP");
 }
 
-export async function exposeWithTailscale(host: string, port: number, tailscalePort?: number, publicExposure = false): Promise<string> {
-  return (await exposeWithTailscaleDetailed(host, port, tailscalePort, publicExposure)).url;
+export async function exposeWithTailscale(
+  host: string,
+  port: number,
+  tailscalePort?: number,
+  publicExposure = false,
+): Promise<string> {
+  return (
+    await exposeWithTailscaleDetailed(host, port, tailscalePort, publicExposure)
+  ).url;
 }
 
-async function removeTailscaleExposurePort(port: number, mode: ExposureMode): Promise<void> {
+async function removeTailscaleExposurePort(
+  port: number,
+  mode: ExposureMode,
+): Promise<void> {
   await exec("tailscale", [mode, `--https=${port}`, "off"]);
 }
 
@@ -828,12 +1010,16 @@ export async function main(): Promise<void> {
   const config = await loadConfig();
   const [command, ...args] = options.command;
   const tailscaleDnsName = await getTailscaleDnsName().catch(() => undefined);
-  const childEnv: NodeJS.ProcessEnv = { ...process.env, FORCE_COLOR: process.env.FORCE_COLOR ?? "1" };
+  const childEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    FORCE_COLOR: process.env.FORCE_COLOR ?? "1",
+  };
 
   if (tailscaleDnsName) {
-    childEnv.__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS = childEnv.__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS
-      ? `${childEnv.__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS},${tailscaleDnsName}`
-      : tailscaleDnsName;
+    childEnv.__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS =
+      childEnv.__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS
+        ? `${childEnv.__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS},${tailscaleDnsName}`
+        : tailscaleDnsName;
   }
 
   const initialLaravelHotFileSnapshot = await snapshotLaravelHotFile();
@@ -857,9 +1043,13 @@ export async function main(): Promise<void> {
     for (const [port, mode] of createdTailscalePorts) {
       try {
         await removeTailscaleExposurePort(port, mode);
-        console.error(`lizardtail: removed Tailscale ${mode === "funnel" ? "Funnel" : "Serve"} mapping on HTTPS port ${port}`);
+        console.error(
+          `lizardtail: removed Tailscale ${mode === "funnel" ? "Funnel" : "Serve"} mapping on HTTPS port ${port}`,
+        );
       } catch (error) {
-        console.error(`lizardtail: failed to remove Tailscale ${mode === "funnel" ? "Funnel" : "Serve"} mapping on HTTPS port ${port}: ${errorMessage(error)}`);
+        console.error(
+          `lizardtail: failed to remove Tailscale ${mode === "funnel" ? "Funnel" : "Serve"} mapping on HTTPS port ${port}: ${errorMessage(error)}`,
+        );
       }
     }
     createdTailscalePorts.clear();
@@ -870,9 +1060,13 @@ export async function main(): Promise<void> {
 
     try {
       await restoreLaravelHotFile(laravelHotFileState);
-      console.error(`lizardtail: restored Laravel Vite hot file: ${laravelHotFileState.path}`);
+      console.error(
+        `lizardtail: restored Laravel Vite hot file: ${laravelHotFileState.path}`,
+      );
     } catch (error) {
-      console.error(`lizardtail: failed to restore Laravel Vite hot file ${laravelHotFileState.path}: ${errorMessage(error)}`);
+      console.error(
+        `lizardtail: failed to restore Laravel Vite hot file ${laravelHotFileState.path}: ${errorMessage(error)}`,
+      );
     } finally {
       laravelHotFileState = undefined;
     }
@@ -925,27 +1119,45 @@ export async function main(): Promise<void> {
       console.error(`\nlizardtail: detected local server on ${localUrl}`);
       assertPortAllowed(config, port, "local");
       if (options.openCheck) await waitForOpenPort(options.host, port, 10_000);
-      const exposure = await exposeWithTailscaleDetailed(options.host, port, options.tailscalePort, options.public, config);
+      const exposure = await exposeWithTailscaleDetailed(
+        options.host,
+        port,
+        options.tailscalePort,
+        options.public,
+        config,
+      );
       createdTailscalePorts.set(exposure.httpsPort, exposure.mode);
       console.error(`lizardtail: serving via Tailscale: ${exposure.url}`);
-      console.error(`lizardtail: cleanup command: tailscale ${exposure.mode} --https=${exposure.httpsPort} off`);
+      console.error(
+        `lizardtail: cleanup command: tailscale ${exposure.mode} --https=${exposure.httpsPort} off`,
+      );
       console.error("");
     })().catch((error: unknown) => {
-      console.error(`lizardtail: failed to expose server: ${errorMessage(error)}`);
+      console.error(
+        `lizardtail: failed to expose server: ${errorMessage(error)}`,
+      );
       stopChild();
       process.exitCode = 1;
     });
   };
 
-  const exposeLaravelVite = (appPort: number, vitePort: number, viteHost: string) => {
+  const exposeLaravelVite = (
+    appPort: number,
+    vitePort: number,
+    viteHost: string,
+  ) => {
     if (exposed || exposing) return;
     clearDetectionTimers();
     exposed = true;
     exposing = (async () => {
       const appLocalUrl = `http://${options.host}:${appPort}`;
       const viteLocalUrl = `http://${viteHost}:${vitePort}`;
-      console.error(`\nlizardtail: detected Laravel app server on ${appLocalUrl}`);
-      console.error(`lizardtail: detected Vite asset server on ${viteLocalUrl}`);
+      console.error(
+        `\nlizardtail: detected Laravel app server on ${appLocalUrl}`,
+      );
+      console.error(
+        `lizardtail: detected Vite asset server on ${viteLocalUrl}`,
+      );
       assertPortAllowed(config, appPort, "local");
       assertPortAllowed(config, vitePort, "local");
 
@@ -954,24 +1166,56 @@ export async function main(): Promise<void> {
         await waitForOpenPort(viteHost, vitePort, 10_000);
       }
 
-      const appExposure = await exposeWithTailscaleDetailed(options.host, appPort, options.tailscalePort, options.public, config);
+      const appExposure = await exposeWithTailscaleDetailed(
+        options.host,
+        appPort,
+        options.tailscalePort,
+        options.public,
+        config,
+      );
       createdTailscalePorts.set(appExposure.httpsPort, appExposure.mode);
       const viteProxy = await startCorsProxy(viteHost, vitePort);
       localProxies.push(viteProxy.server);
-      const viteTailscalePort = options.viteTailscalePort ?? (await chooseTailscaleHttpsPort(appExposure.httpsPort, config));
-      const viteExposure = await exposeWithTailscaleDetailed(viteProxy.host, viteProxy.port, viteTailscalePort, options.public, config);
+      const viteTailscalePort =
+        options.viteTailscalePort ??
+        (await chooseTailscaleHttpsPort(appExposure.httpsPort, config));
+      const viteExposure = await exposeWithTailscaleDetailed(
+        viteProxy.host,
+        viteProxy.port,
+        viteTailscalePort,
+        options.public,
+        config,
+      );
       createdTailscalePorts.set(viteExposure.httpsPort, viteExposure.mode);
-      laravelHotFileState = await writeLaravelHotFile(viteExposure.url, initialLaravelHotFileSnapshot);
+      laravelHotFileState = await writeLaravelHotFile(
+        viteExposure.url,
+        initialLaravelHotFileSnapshot,
+      );
 
-      console.error(`lizardtail: serving Laravel via Tailscale: ${appExposure.url}`);
-      console.error(`lizardtail: serving Vite assets via Tailscale: ${viteExposure.url}`);
-      console.error(`lizardtail: proxying Vite through local CORS proxy: http://${viteProxy.host}:${viteProxy.port} -> ${viteLocalUrl}`);
-      if (laravelHotFileState) console.error(`lizardtail: wrote Laravel Vite hot file: ${laravelHotFileState.path}`);
-      console.error(`lizardtail: cleanup command: tailscale ${appExposure.mode} --https=${appExposure.httpsPort} off`);
-      console.error(`lizardtail: cleanup command: tailscale ${viteExposure.mode} --https=${viteExposure.httpsPort} off`);
+      console.error(
+        `lizardtail: serving Laravel via Tailscale: ${appExposure.url}`,
+      );
+      console.error(
+        `lizardtail: serving Vite assets via Tailscale: ${viteExposure.url}`,
+      );
+      console.error(
+        `lizardtail: proxying Vite through local CORS proxy: http://${viteProxy.host}:${viteProxy.port} -> ${viteLocalUrl}`,
+      );
+      if (laravelHotFileState)
+        console.error(
+          `lizardtail: wrote Laravel Vite hot file: ${laravelHotFileState.path}`,
+        );
+      console.error(
+        `lizardtail: cleanup command: tailscale ${appExposure.mode} --https=${appExposure.httpsPort} off`,
+      );
+      console.error(
+        `lizardtail: cleanup command: tailscale ${viteExposure.mode} --https=${viteExposure.httpsPort} off`,
+      );
       console.error("");
     })().catch((error: unknown) => {
-      console.error(`lizardtail: failed to expose Laravel/Vite servers: ${errorMessage(error)}`);
+      console.error(
+        `lizardtail: failed to expose Laravel/Vite servers: ${errorMessage(error)}`,
+      );
       stopChild();
       process.exitCode = 1;
     });
@@ -986,7 +1230,11 @@ export async function main(): Promise<void> {
 
     const laravelVite = resolveLaravelViteSetup(recentOutput, options.port);
     if (laravelVite) {
-      exposeLaravelVite(laravelVite.appPort, laravelVite.vitePort, laravelVite.viteHost);
+      exposeLaravelVite(
+        laravelVite.appPort,
+        laravelVite.vitePort,
+        laravelVite.viteHost,
+      );
       return;
     }
 
@@ -1000,7 +1248,11 @@ export async function main(): Promise<void> {
       detectionTimer = undefined;
       const settledLaravelVite = resolveLaravelViteSetup(recentOutput);
       if (settledLaravelVite) {
-        exposeLaravelVite(settledLaravelVite.appPort, settledLaravelVite.vitePort, settledLaravelVite.viteHost);
+        exposeLaravelVite(
+          settledLaravelVite.appPort,
+          settledLaravelVite.vitePort,
+          settledLaravelVite.viteHost,
+        );
         return;
       }
 
@@ -1021,7 +1273,9 @@ export async function main(): Promise<void> {
 
   child.on("error", (error) => {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      console.error(`lizardtail: failed to start ${command}: command not found on PATH.`);
+      console.error(
+        `lizardtail: failed to start ${command}: command not found on PATH.`,
+      );
     } else {
       console.error(`lizardtail: failed to start ${command}: ${error.message}`);
     }
@@ -1029,19 +1283,29 @@ export async function main(): Promise<void> {
   });
 
   if (options.port) {
-    explicitPortFallbackTimer = setTimeout(() => {
-      explicitPortFallbackTimer = undefined;
-      const laravelVite = resolveLaravelViteSetup(recentOutput, options.port);
-      if (laravelVite) exposeLaravelVite(laravelVite.appPort, laravelVite.vitePort, laravelVite.viteHost);
-      else expose(options.port!);
-    }, Math.min(DETECTION_SETTLE_MS, options.timeoutMs));
+    explicitPortFallbackTimer = setTimeout(
+      () => {
+        explicitPortFallbackTimer = undefined;
+        const laravelVite = resolveLaravelViteSetup(recentOutput, options.port);
+        if (laravelVite)
+          exposeLaravelVite(
+            laravelVite.appPort,
+            laravelVite.vitePort,
+            laravelVite.viteHost,
+          );
+        else expose(options.port!);
+      },
+      Math.min(DETECTION_SETTLE_MS, options.timeoutMs),
+    );
   }
 
   const timeout = options.port
     ? undefined
     : setTimeout(() => {
         if (!exposed) {
-          console.error(`lizardtail: no server port detected within ${options.timeoutMs}ms`);
+          console.error(
+            `lizardtail: no server port detected within ${options.timeoutMs}ms`,
+          );
           stopChild();
           process.exitCode = 1;
         }
@@ -1057,7 +1321,10 @@ export async function main(): Promise<void> {
     });
   }
 
-  const [code, signal] = (await once(child, "exit")) as [number | null, NodeJS.Signals | null];
+  const [code, signal] = (await once(child, "exit")) as [
+    number | null,
+    NodeJS.Signals | null,
+  ];
   if (forceKillTimer) clearTimeout(forceKillTimer);
   if (timeout) clearTimeout(timeout);
   clearDetectionTimers();
@@ -1074,7 +1341,10 @@ function isCliEntrypoint(): boolean {
   if (!process.argv[1]) return false;
 
   try {
-    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);
+    return (
+      realpathSync(fileURLToPath(import.meta.url)) ===
+      realpathSync(process.argv[1])
+    );
   } catch {
     return false;
   }

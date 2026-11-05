@@ -82,16 +82,9 @@ Services: use internal endpoints for backend traffic and test from another devic
 
 ## Checks
 
-```bash
-npm test
-python3 scripts/smoke-managed.py       # disposable real systemd/Caddy multi-service test
-node scripts/smoke-resources.mjs       # disposable PostgreSQL/S3 clone + proxy/CORS test
-```
-
-The smoke tests use pinned images and clean only their disposable resources.
-Tailnet access is a separate host integration check. Also run
-`node scripts/smoke-bridge.mjs` for socket reservation after upstream failure and
-`python3 scripts/smoke-finish.py` for merged-PR/data cleanup gates.
+See [verification](https://github.com/dasomji/lizardtail/blob/main/docs/agents/verify.md) for local, CI and disposable Coolify checks,
+including their tailnet reachability limits, and [development](https://github.com/dasomji/lizardtail/blob/main/docs/agents/development.md)
+for isolated fixture setup.
 
 For continuous API access, `tailscale-oauth.json` (mode 600, beside the host file)
 can contain `{"clientId":"...","clientSecret":"..."}`. Lizardtail obtains and
