@@ -82,8 +82,8 @@ Services: use internal endpoints for backend traffic and test from another devic
 
 ## Checks
 
-See [verification](agents/verify.md) for local, CI and disposable Coolify checks,
-including their tailnet reachability limits, and [development](agents/development.md)
+See [verification](https://github.com/dasomji/lizardtail/blob/main/docs/agents/verify.md) for local, CI and disposable Coolify checks,
+including their tailnet reachability limits, and [development](https://github.com/dasomji/lizardtail/blob/main/docs/agents/development.md)
 for isolated fixture setup.
 
 For continuous API access, `tailscale-oauth.json` (mode 600, beside the host file)

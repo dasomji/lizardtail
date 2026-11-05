@@ -72,6 +72,7 @@ await writeFile(
 );
 const plans = [];
 const clients = [];
+let journeyError;
 const sql = (p, q) =>
   docker(
     p,
@@ -194,9 +195,18 @@ try {
   console.log(
     "PASS: PostgreSQL clone isolation, persistent stop/resume, S3 clone isolation, signed PUT/GET through Caddy, browser CORS",
   );
+} catch (error) {
+  journeyError = error;
+  throw error;
 } finally {
-  for (const c of clients) c.destroy();
   const errors = [];
+  for (const c of clients) {
+    try {
+      c.destroy();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
   for (const p of plans.reverse()) {
     try {
       await down(p);
@@ -209,10 +219,17 @@ try {
       errors.push(error);
     }
   }
+  if (!errors.length) {
+    try {
+      await rm(root, { recursive: true, force: true });
+    } catch (error) {
+      errors.push(error);
+    }
+  }
   if (errors.length)
     throw new AggregateError(
-      errors,
+      journeyError ? [journeyError, ...errors] : errors,
       `Cleanup failed; fixture retained at ${root}`,
+      { cause: journeyError },
     );
-  await rm(root, { recursive: true, force: true });
 }

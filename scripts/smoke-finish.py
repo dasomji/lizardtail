@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Real git/SQLite/systemd cleanup lifecycle with mocked GitHub metadata."""
-import json,os,pathlib,sqlite3,subprocess,tempfile
+import sys,json,os,pathlib,sqlite3,subprocess,tempfile
 repo=pathlib.Path(__file__).resolve().parents[1]
 with tempfile.TemporaryDirectory(prefix='lt-finish-') as td:
  t=pathlib.Path(td);main=t/'main';feature=t/'feature';remote=t/'remote.git';merger=t/'merger';bindir=t/'bin';bindir.mkdir();fail=t/'fail-migration';metadata=t/'pr.json'
@@ -36,8 +36,14 @@ with tempfile.TemporaryDirectory(prefix='lt-finish-') as td:
   c=sqlite3.connect(pathlib.Path(mp['dir'])/'database.sqlite');assert c.execute('SELECT value FROM sample').fetchone()[0]=='main-data';c.close();assert cli(['up'],feature,'feature',False).returncode!=0
   print('PASS: divergent main keeps preview running; unmerged cleanup refused, failed main migration preserves feature data + backup, merged cleanup removes feature only, main rows retained, finished instance cannot restart')
  finally:
+  original=sys.exc_info()[1]
   errors=[]
   for root,instance in [(feature,'feature'),(main,'main')]:
-   result=cli(['down'],root,instance,False)
-   if result.returncode:errors.append(result.stderr+result.stdout)
-  if errors:raise RuntimeError('Cleanup: '+'; '.join(errors))
+   try:
+    result=cli(['down'],root,instance,False)
+    if result.returncode:errors.append(result.stderr+result.stdout)
+   except Exception as e:errors.append(str(e))
+  if errors:
+   cleanup=RuntimeError('Cleanup: '+'; '.join(errors))
+   if original is not None:raise original from cleanup
+   raise cleanup

@@ -5,13 +5,13 @@ or application database of its own. L2/CI builds it, tests its public commands a
 refuses an invalid manifest. Real fixture database migration and supervised boot
 belong to L3 on Coolify, never GitHub CI.
 
-| Rung              | Invocation                                                                                                                                                   | Coverage and budget                                                                                                                                                                                                                                  |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| L0 · edit         | `npm run typecheck`; `npm run build && npx tsx --test tests/index.test.ts` (wrapper), `tests/managed.test.ts` (managed), or `tests/checks.test.ts` (tooling) | Focus the touched seam; build before tests that use `dist`. Initial eight tooling tests took 41.6 s under concurrent host smoke load.                                                                                                                |
-| L1 · commit       | `npm run hooks:install` once; then normal `git commit`. Explicit rerun: `.githooks/pre-commit` or `npm run check:fast`                                       | Staged format, typecheck, build, related tests. Measured 41.3–55.2 s for implementation commits (42 tests after the rename regression); aim below 60 s. Duration is printed per run.                                                                 |
-| L2 · review entry | `npm run check:full`                                                                                                                                         | Build, tracked-file Prettier check, every test, CLI `--help` success and invalid-manifest refusal. Measured 42.5 s with 41 tests before the additional rename regression; budget 90 s on Coolify.                                                    |
-| L3 · functional   | `npm run verify:app`                                                                                                                                         | Build this checkout and all four disposable host journeys below. Measured 50.5 s for the pilot run, failing at fresh PostgreSQL initialization (three other journeys passed). Allow 15 minutes per journey; prerequisite probes time out after 30 s. |
-| L5 · CI           | GitHub Actions job `test`, running `npm ci` then `npm run check:full`                                                                                        | Ubuntu/Node 22, same L2 command. Never invokes L3. Observe the actual PR check; local results do not imply CI passed.                                                                                                                                |
+| Rung              | Invocation                                                                                                                                                   | Coverage and budget                                                                                                                     |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
+| L0 · edit         | `npm run typecheck`; `npm run build && npx tsx --test tests/index.test.ts` (wrapper), `tests/managed.test.ts` (managed), or `tests/checks.test.ts` (tooling) | Focus the touched seam; build before tests that use `dist`.                                                                             |
+| L1 · commit       | `npm run hooks:install` once; then normal `git commit`. Explicit rerun: `.githooks/pre-commit` or `npm run check:fast`                                       | Staged format, typecheck, build, related tests. Aim below 60 s. Duration is printed per run.                                            |
+| L2 · review entry | `npm run check:full`                                                                                                                                         | Build, tracked-file Prettier check, every test, CLI `--help` success and invalid-manifest refusal. Budget 90 s on Coolify.              |
+| L3 · functional   | `npm run verify:app`                                                                                                                                         | Build this checkout and all four disposable host journeys below. Allow 15 minutes per journey; prerequisite probes time out after 30 s. |
+| L5 · CI           | GitHub Actions job `test`, running `npm ci` then `npm run check:full`                                                                                        | Ubuntu/Node 22, same L2 command. Never invokes L3. Observe the actual PR check; local results do not imply CI passed.                   |
 
 `npm run lint` checks tracked supported first-party files with Prettier. Generated
 lockfile, `dist`, dependencies, coverage, vendor and local evidence are excluded;
@@ -34,13 +34,14 @@ checking and tests still run. Unsupported staged files still trigger the remaini
 checks. A direct run with no staged diff checks all indexed files and all tests.
 
 - `src/index.ts` or `tests/index.test.ts`: wrapper tests.
-- `src/managed/**` or `tests/managed.test.ts`: managed tests.
+- `src/managed/**`: both wrapper and managed tests; the wrapper calls managed dispatch.
+- `tests/managed.test.ts`: managed tests.
 - Both groups: both suites. Renames include both old and new paths.
 - Shared or unknown paths (including tooling), no changes or missing selected
   tests: every indexed test. An empty test selection fails.
 
 The fixture Git integration tests prove bad staged formatting rejects a real
-commit with unchanged HEAD, staged type errors fail, successful partial staging
+commit (including `git commit -a` and `git commit <path>`) with unchanged HEAD, staged type errors fail, successful partial staging
 preserves live file/index bytes, and unstaged runner/package edits do not bypass
 the hook. They also prove related-test selection and conflict preservation.
 
@@ -55,8 +56,7 @@ and preserve their exit status; do not delete them to get past the check.
 A pre-merge main checkout may lack the tracked executable hook. Installation warns
 for every such worktree and still installs; L1 does not run there until its revision
 includes `.githooks/pre-commit`. Rerun installation after adding worktrees to audit
-coverage. The warning for this pilot's main checkout is expected; leave that
-checkout untouched. To undo a fresh installation:
+coverage. To undo a fresh installation:
 
 ```bash
 git config --local --unset core.hooksPath
@@ -74,6 +74,8 @@ a successful disposable `systemd-run --user` command, and Docker context `rootle
 with actual rootless security options. The PostgreSQL and SeaweedFS image digests
 in `scripts/smoke-resources.mjs` must already be available in that context. A missing
 prerequisite fails clearly before fixtures start; it is not a passing skip.
+Check missing-prerequisite refusals manually as part of L3. Automated L2/CI tests
+invoke `verify:app` only with `CI=true` and assert its never-in-CI refusal.
 
 The runner builds this checkout's `dist` and invokes, in order:
 
@@ -93,7 +95,11 @@ Fixtures use temporary state/host config outside the checkout, exposure `none`
 and isolated port ranges. Only their recorded/labeled resources are cleaned.
 Cleanup failure fails the rung; the runner reports suppressed cleanup errors as
 failures too. It attempts later journeys after an earlier journey fails, then exits
-nonzero if any failed. Never reset global Serve or prune Docker to repair a smoke.
+nonzero if any failed. Journey stdout/stderr stream as they arrive. A 15-minute
+timeout sends SIGINT, allows 10 seconds for cleanup, then escalates to SIGTERM
+and, after another 10 seconds, SIGKILL. Fixtures may be retained if cleanup did
+not complete; inspect only the fixture’s recorded resources. Never reset global
+Serve or prune Docker to repair a smoke.
 
 Exposure `none` and local HTTP/Host-header checks prove host routing and failure
 behavior, not client ACLs or tailnet reachability. This host may not hairpin to

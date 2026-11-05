@@ -80,8 +80,8 @@ lizardtail help
 
 ### Development from source
 
-See [agent development](docs/agents/development.md) and
-[verification](docs/agents/verify.md) for isolated fixtures and checks.
+See [agent development](https://github.com/dasomji/lizardtail/blob/main/docs/agents/development.md) and
+[verification](https://github.com/dasomji/lizardtail/blob/main/docs/agents/verify.md) for isolated fixtures and checks.
 
 Use `git clone` only if you want to work on `lizardtail` itself:
 
@@ -389,8 +389,8 @@ Some dev servers reject requests from the Tailscale hostname. Configure your dev
 
 ## Development and contributing
 
-Use [the development guide](docs/agents/development.md) to set up the CLI and
-[the verification guide](docs/agents/verify.md) for hook installation, checks and
+Use [the development guide](https://github.com/dasomji/lizardtail/blob/main/docs/agents/development.md) to set up the CLI and
+[the verification guide](https://github.com/dasomji/lizardtail/blob/main/docs/agents/verify.md) for hook installation, checks and
 functional coverage. Run `npm run check:full` before handing changes over.
 Issues and pull requests are welcome; include tests for behavior changes.
 

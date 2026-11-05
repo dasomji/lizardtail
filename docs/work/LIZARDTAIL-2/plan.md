@@ -143,3 +143,15 @@ directory → file-pr.
   refuses and preserves that configuration like every other conflicting value;
   the public installer test was observed red then green. This is in-scope hook
   preservation. The preceding 42-test L1 commit passed in 55.15 s.
+
+- L4 round 1: verified and fixed findings 1–6, 8 and 9; none skipped. CI=true
+  refusal replaces the L2 host preflight test; missing-prerequisite refusal is
+  manual L3. Managed source selects both suites, whitespace diagnostics are
+  visible, and temporary-index commit refusals preserve HEAD. The runner streams
+  diagnostics and escalates timeout signals after cleanup grace; all three
+  affected harnesses preserve journey and cleanup errors. Disposable child and
+  executable-boundary regressions passed, with selection/whitespace/cleanup
+  failures observed red first. Docs keep budgets, remove pilot prose and use
+  GitHub agent-guide links from every shipped guide. No src/** changes, live L3,
+  push, PR, Plane/GitHub mutation or main-checkout edit. Known issue:
+  [LIZARDTAIL-3](https://plane.audiopoesis.com/personal/projects/54fef1b5-7af9-47c5-9ae2-4377568a3d1f/work-items/4c9a8af9-4631-4abf-b476-51f50dff0d39).

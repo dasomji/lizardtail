@@ -21,7 +21,10 @@ try {
   const git = (...args) =>
     execFileSync("git", args, { cwd: root, encoding: "utf8" });
   const names = (s) => s.split("\0").filter(Boolean);
-  git("diff", "--cached", "--check");
+  execFileSync("git", ["diff", "--cached", "--check"], {
+    cwd: root,
+    stdio: "inherit",
+  });
   if (git("ls-files", "--unmerged"))
     throw Error("Resolve unmerged index entries first");
   const changed = names(
@@ -69,10 +72,10 @@ try {
   for (const file of changed) {
     if (file === "src/index.ts" || file === "tests/index.test.ts")
       selected.add("tests/index.test.ts");
-    else if (
-      file.startsWith("src/managed/") ||
-      file === "tests/managed.test.ts"
-    )
+    else if (file.startsWith("src/managed/")) {
+      selected.add("tests/index.test.ts");
+      selected.add("tests/managed.test.ts");
+    } else if (file === "tests/managed.test.ts")
       selected.add("tests/managed.test.ts");
     else {
       selected.clear();

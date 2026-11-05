@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Host-only functional rung. No real project registry, Tailnet or production changes.
-import { spawnSync } from "node:child_process";
+import { command as runCommand } from "./verify-command.mjs";
 import { accessSync, constants } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -17,25 +17,7 @@ const env = Object.fromEntries(
 const caddy = path.join(os.homedir(), ".local/bin/caddy");
 env.CADDY_BIN = caddy;
 function command(cmd, args, preflight = false) {
-  const p = spawnSync(cmd, args, {
-    cwd: root,
-    env,
-    encoding: "utf8",
-    timeout: preflight ? 30000 : 900000,
-    maxBuffer: 16 * 1024 * 1024,
-  });
-  if (p.error || p.status !== 0)
-    throw Error(
-      `${preflight ? "preflight: " : ""}${cmd} failed: ${p.error?.message ?? p.stderr ?? p.signal}`,
-    );
-  if (!preflight) {
-    process.stdout.write(p.stdout);
-    process.stderr.write(p.stderr);
-    // Existing lifecycle code can report suppressed teardown failures to stderr.
-    if (/Cleanup:/i.test(p.stdout + p.stderr))
-      throw Error(`${cmd}: cleanup failure reported`);
-  }
-  return p.stdout;
+  return runCommand(cmd, args, { cwd: root, env, preflight });
 }
 try {
   if (process.platform !== "linux" || env.CI)
@@ -47,24 +29,24 @@ try {
   } catch {
     throw Error("preflight: executable Caddy required at ~/.local/bin/caddy");
   }
-  command(caddy, ["version"], true);
-  command("python3", ["--version"], true);
-  command("flock", ["--version"], true);
-  command("ss", ["--version"], true);
-  command("curl", ["--version"], true);
+  await command(caddy, ["version"], true);
+  await command("python3", ["--version"], true);
+  await command("flock", ["--version"], true);
+  await command("ss", ["--version"], true);
+  await command("curl", ["--version"], true);
   try {
     accessSync("/usr/lib/systemd/systemd-socket-proxyd", constants.X_OK);
   } catch {
     throw Error("preflight: systemd-socket-proxyd is required");
   }
-  command("systemctl", ["--user", "list-jobs", "--no-pager"], true);
-  command(
+  await command("systemctl", ["--user", "list-jobs", "--no-pager"], true);
+  await command(
     "systemd-run",
     ["--user", "--wait", "--collect", "--pipe", "true"],
     true,
   );
   const options = JSON.parse(
-    command(
+    await command(
       "docker",
       [
         "--context",
@@ -90,7 +72,7 @@ try {
   if (images.length !== 2)
     throw Error("preflight: expected two pinned harness images");
   for (const image of images)
-    command(
+    await command(
       "docker",
       ["--context", "rootless", "image", "inspect", image],
       true,
@@ -99,7 +81,7 @@ try {
     "PASS: Coolify prerequisites (rootless Docker, user-systemd, Caddy, pinned images)",
   );
   console.log("+ npm run build");
-  command("npm", ["run", "build"]);
+  await command("npm", ["run", "build"]);
   const failures = [];
   for (const [cmd, script] of [
     ["python3", "scripts/smoke-managed.py"],
@@ -109,7 +91,7 @@ try {
   ]) {
     console.log("+", cmd, script);
     try {
-      command(cmd, [script]);
+      await command(cmd, [script]);
     } catch (error) {
       console.error(`${script}: ${error.message}`);
       failures.push(script);

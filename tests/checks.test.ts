@@ -117,6 +117,20 @@ test("npm check:fast rejects an unformatted staged file", () => {
   }
 });
 
+test("check:fast shows the offending lines for staged whitespace errors", () => {
+  const f = fixture();
+  try {
+    f.write("notes.txt", "trailing whitespace  \n");
+    f.git("add", "notes.txt");
+    const p = f.run("npm", ["run", "check:fast"], false);
+    assert.notEqual(p.status, 0);
+    assert.match(p.stdout + p.stderr, /notes\.txt:1: trailing whitespace/);
+    assert.match(p.stdout + p.stderr, /\+trailing whitespace/);
+  } finally {
+    f.close();
+  }
+});
+
 test("installed hook blocks a bad staged commit and preserves HEAD", () => {
   const f = fixture();
   try {
@@ -133,6 +147,24 @@ test("installed hook blocks a bad staged commit and preserves HEAD", () => {
   }
 });
 
+for (const args of [["-a"], ["src/index.ts"]]) {
+  test(`installed hook rejects bad formatting with git commit ${args.join(" ")} and preserves HEAD`, () => {
+    const f = fixture();
+    try {
+      f.run("npm", ["run", "hooks:install"]);
+      const head = f.git("rev-parse", "HEAD");
+      f.write("src/index.ts", "export const value=2\n");
+      f.git("add", "src/index.ts");
+      const p = f.run("git", ["commit", "-qm", "must refuse", ...args], false);
+      assert.notEqual(p.status, 0);
+      assert.match(p.stdout + p.stderr, /Code style issues|formatting/i);
+      assert.equal(f.git("rev-parse", "HEAD"), head);
+    } finally {
+      f.close();
+    }
+  });
+}
+
 test("partial staging checks indexed bytes and related wrapper tests without rewriting files/index", () => {
   const f = fixture();
   try {
@@ -147,7 +179,7 @@ test("partial staging checks indexed bytes and related wrapper tests without rew
     f.write("package.json", "broken unstaged package\n");
     const live = readFileSync(path.join(f.root, "src/index.ts"));
     const before = readFileSync(path.join(f.root, ".git/index"));
-    // Invoke the installed hook as Git does, including a live index environment.
+    // A direct hook invocation checks partial staging; the commit below exercises Git’s hook environment.
     const p = f.run("sh", [".githooks/pre-commit"]);
     assert.match(p.stdout, /wrapper selection/);
     assert.doesNotMatch(p.stdout, /managed selection/);
@@ -165,14 +197,14 @@ test("partial staging checks indexed bytes and related wrapper tests without rew
   }
 });
 
-test("managed changes select managed tests; unknown unsupported files fail closed to all tests", () => {
+test("managed changes select both suites; unknown unsupported files fail closed to all tests", () => {
   const f = fixture();
   try {
     f.write("src/managed/fixture.ts", "export const managed = 2;\n");
     f.git("add", "src/managed/fixture.ts");
     let p = f.run("npm", ["run", "check:fast"]);
     assert.match(p.stdout, /managed selection/);
-    assert.doesNotMatch(p.stdout, /wrapper selection/);
+    assert.match(p.stdout, /wrapper selection/);
     f.write("notes.txt", "unknown shared dependency\n");
     f.git("add", "notes.txt");
     // An unsupported file alone still runs typecheck/build and the entire suite.
@@ -258,22 +290,16 @@ test("npm check:cli exercises help and invalid-manifest refusal on this build", 
   assert.match(p.stdout, /PASS: CLI help and invalid-manifest refusal/);
 });
 
-test("npm verify:app refuses missing Coolify prerequisites before smoke work", () => {
-  const home = mkdtempSync(path.join(os.tmpdir(), "lt-preflight-"));
-  try {
-    const env = { ...process.env, HOME: home, CI: "" };
-    const p = spawnSync("npm", ["run", "verify:app"], {
-      cwd: source,
-      env,
-      encoding: "utf8",
-      timeout: 10000,
-    });
-    assert.notEqual(p.status, 0);
-    assert.match(p.stderr, /preflight.*caddy/i);
-    assert.doesNotMatch(p.stdout, /smoke-managed/);
-  } finally {
-    rmSync(home, { recursive: true, force: true });
-  }
+test("npm verify:app refuses CI before any host probes or smoke work", () => {
+  const p = spawnSync("npm", ["run", "verify:app"], {
+    cwd: source,
+    env: { ...process.env, CI: "true" },
+    encoding: "utf8",
+    timeout: 10000,
+  });
+  assert.notEqual(p.status, 0);
+  assert.match(p.stderr, /preflight.*never CI/);
+  assert.doesNotMatch(p.stdout, /PASS: Coolify|npm run build|smoke-/);
 });
 
 test("renaming wrapper code into managed code checks both related suites", () => {

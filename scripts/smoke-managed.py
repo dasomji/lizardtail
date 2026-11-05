@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Disposable real systemd/Caddy lifecycle check; no Tailnet or database changes."""
-import json, os, pathlib, subprocess, tempfile, urllib.request
+import sys,json, os, pathlib, subprocess, tempfile, urllib.request
 repo=pathlib.Path(__file__).resolve().parents[1]
 with tempfile.TemporaryDirectory(prefix='lt-smoke-') as td:
  root=pathlib.Path(td)
@@ -28,8 +28,12 @@ with tempfile.TemporaryDirectory(prefix='lt-smoke-') as td:
   resumed=cli('up','--instance','one');assert resumed['urls']==a['urls'];assert get(a['urls']['app'])=='web:one'
   print('PASS: two independent instances, API routing, idempotent up, independent stop, stable resume')
  finally:
+  original=sys.exc_info()[1]
   errors=[]
   for n in ['one','two']:
    try:cli('down','--instance',n)
    except Exception as e:errors.append(str(e))
-  if errors:raise RuntimeError('Cleanup: '+'; '.join(errors))
+  if errors:
+   cleanup=RuntimeError('Cleanup: '+'; '.join(errors))
+   if original is not None:raise original from cleanup
+   raise cleanup
