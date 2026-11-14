@@ -34,10 +34,7 @@ their filenames alone.
 ## Single-user merge approval
 
 single-user: rollback-ok
-rollback: Open a revert PR of the squash commit (`git revert <squash-sha>` on a
-recovery branch), verify L1/L2 and CI `test`, then squash-merge through G3/G4 with
-`--match-head-commit <head>`; refresh and rebuild the host's linked main checkout
-as described below.
+rollback: Open a revert PR of the squash commit (`git revert <squash-sha>` on a recovery branch), verify L1/L2 and CI `test`, then squash-merge through the same gates (G3/G4, `--match-head-commit <head>`); reinstall the host build from the npm-linked main checkout (`git -C /home/dev/Development/lizardtail pull --ff-only && npm --prefix /home/dev/Development/lizardtail ci`), confirm `git -C /home/dev/Development/lizardtail rev-parse HEAD` equals the revert's merge commit and `lizardtail --help` succeeds; for an approved npm release, publish a fixed version or `npm deprecate`, never `npm unpublish`.
 
 Daniel's 2026-11-06 KITCHEN-27 sign-off, amended 2026-11-07, is recorded in
 chefs-kitchen ADR 0003 (`docs/adr/0003-single-user-merge-approval.md`). The marker
@@ -60,17 +57,27 @@ never the PR head. A PR is never judged by the marker or rules it changes.
 
 ## Deploy health and rollback
 
-Merges to main do not deploy or publish. G6's deploy-health check is the
+Merges to main publish nothing; the only rollout is refreshing the host's
+npm-linked main checkout. G6's deploy-health check is the
 default-branch CI run of workflow `Test`, job `test` (`npm ci` then
 `npm run check:full`, as in [verification L5](verify.md)), reaching success on the
-merge commit, plus `lizardtail --help` succeeding from the refreshed host build.
+merge commit, plus `git -C <checkout> rev-parse HEAD` equaling the merge commit
+(or the revert's merge commit) before `lizardtail --help` succeeds from the
+refreshed host build.
 
 The host's global `lizardtail` is `npm link`ed: its bin symlinks to
 `<main checkout>/dist/index.js` (currently `/home/dev/Development/lizardtail` on
-this host). After a merge or rollback revert merges, refresh that checkout on
-main with `git pull --ff-only`, then run `npm ci` (prepare builds `dist`), or
-`npm run build` with dependencies already installed. Confirm `lizardtail --help`
-succeeds. A code revert alone does not refresh this build.
+this host). As part of G6 and rollback, the merging work thread may refresh this
+one checkout on main with `git pull --ff-only`, then `npm ci` (prepare builds
+`dist`), or `npm run build` with dependencies already installed; no other
+production operations are authorized. Record the pre-merge main SHA before
+refreshing. A code revert alone does not refresh this build.
+
+If the host refresh's `npm ci`/build or `lizardtail --help` fails, rebuild the
+pre-merge main SHA in that checkout
+(`git -C <checkout> checkout --detach <pre-merge-sha> && npm --prefix <checkout> ci`),
+return the checkout to `main` once the revert merges and is refreshed, and record
+the interim state in the merge receipt.
 
 `publish.yml` publishes only on `v*` tags. After an approved npm release, confirm
 publishing succeeded; recovery publishes a fixed version or uses `npm deprecate`,
